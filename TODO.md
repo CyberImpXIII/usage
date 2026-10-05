@@ -2,19 +2,28 @@
 
 ## Own bugs
 
-- **No GitHub repo yet.** Built 2026-10-05 as a local repo with no `origin`;
-  creating it (`setup --github`, PLAN-usage-reporting.md §5 phase 1) waits on
-  Jacob's yes. Until then commits stay local and nothing is pushed.
+- **An `origin` now exists, never pushed to.** Built 2026-10-05 with no remote;
+  by the §7.12 setup run (2026-10-05 11:43) `git remote -v` showed
+  `git@github.com:CyberImpXIII/usage.git`, added by someone else. unverified:
+  the GitHub repo exists -- settle: `gh repo view CyberImpXIII/usage`. Pushing
+  still waits on Jacob's yes; commits stay local.
 - **The tool is inert until phase 2.** Nothing is registered and no store exists.
   Jacob's steps: `./usage registrations --export` (writes
   `~/.claude/settings.json.proposed`, never the live file), review it, copy it
   over `~/.claude/settings.json`, then `./usage init`. Until then `status` and
   `gate` answer "no sample", and `gate` holds.
-- **`shared:hooks-installed` is red in place** (2026-10-05): `.claude/lib/write-targets.sh`
-  missing here. Not from the §9 export change (it touches no `.claude/` path);
-  the same check on a copy of HEAD outside the workspace printed OK, so it
-  depends on where the repo sits. Fix: install the shared lib copy from
-  tools/hooks/source (`./setup` for this repo), a step for this repo's owner.
+- **`shared:hooks-installed` is red on 3 drifted copies** (setup run,
+  PLAN-repo-setup §7.12 step 2, 2026-10-05): setup installed the 11 hooks,
+  their tests and `.claude/lib/{ledger,write-targets}.sh`, and left
+  `.claude/hooks/{troubleshooting,test-troubleshooting,test-prefer-recipes}.sh`
+  byte-unchanged as `drift` (logic differs from tools/hooks/source;
+  `hooks copies` agrees). Replacing them (`--rebuild`) waits on Jacob.
+- **Setup's other outputs wait on Jacob** (same run): `.claude/settings.json`
+  lacks 12 registrations; the proposal is `.claude/settings.proposed.json`
+  (gitignored), applied by `cp` over settings.json, Jacob's step. `.githooks/`
+  is installed but inert: `core.hooksPath` unset, and setting it before
+  `./dev.sh` runs `.githooks/check-pass record` would make the pre-commit
+  refuse every commit (setup's `githooks needs-jacob` line).
 - **`state/` grows with each transcript** (one file per transcript, a per-message
   map inside). Nothing prunes it. Harmless at our volume; a `usage prune` is the
   fix if it ever matters.

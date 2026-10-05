@@ -104,9 +104,9 @@ check 0 "short jq"            'node query.js sites | jq -r ".[].hostname"'
 check 0 "data heredoc"        'cat > recipe.json <<EOF
 {"a":1}
 EOF'
-# The two false positives that were reported (top-level TODO.md, harness
-# 2026-10-02 and planner 2026-10-03): an interpreter NAMED in a data heredoc's
-# body is text, not a command.
+# The two false positives that were reported (top-level TODO.md, 2026-10-02
+# and 2026-10-03): an interpreter NAMED in a data heredoc's body is text, not
+# a command.
 check 0 "commit message via cat heredoc" "git commit -m \"\$(cat <<'EOF'
 hooks: mention perl and python3 in the message
 EOF
