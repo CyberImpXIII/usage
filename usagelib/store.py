@@ -82,28 +82,49 @@ def read(name):
     """Rows as dicts; [] when the store or the file is absent. A row whose cell
     count is off is skipped, never padded."""
     try:
-        path = root() / name
+        return scan(root(), name)[0]
     except NoStore:
         return []
+
+
+def scan(d, name):
+    """(rows, line number of each row, skipped line numbers) of one ledger in
+    store folder d: the one reader, under read() and the data-repo export
+    (usagelib/datarepo.py). An absent file is ([], [], [])."""
+    path = d / name
     if not path.exists():
-        return []
+        return [], [], []
     cols = COLUMNS[name]
-    out = []
+    out, at, skipped = [], [], []
     for i, line in enumerate(path.read_text().splitlines()):
         cells = line.split("\t")
         if i == 0 and cells == cols:
             continue
         if len(cells) != len(cols):
+            skipped.append(i + 1)
             continue
         out.append(dict(zip(cols, cells)))
-    return out
+        at.append(i + 1)
+    return out, at, skipped
+
+
+def render(name, rows):
+    """A ledger's text as append() writes it: header, then one line per row."""
+    cols = COLUMNS[name]
+    return "".join("\t".join(r) + "\n" for r in
+                   [cols] + [[_cell(row.get(c)) for c in cols] for row in rows])
+
+
+def write_text(d, name, text):
+    """Replace one store file whole (tmp + rename), under a held lock."""
+    path = d / name
+    tmp = d / f".{name}.tmp-{os.getpid()}"
+    tmp.write_text(text)
+    os.replace(tmp, path)
 
 
 def write_json(d, name, obj):
-    path = d / name
-    tmp = d / f".{name}.tmp-{os.getpid()}"
-    tmp.write_text(json.dumps(obj, sort_keys=True) + "\n")
-    os.replace(tmp, path)
+    write_text(d, name, json.dumps(obj, sort_keys=True) + "\n")
 
 
 def read_json(name):

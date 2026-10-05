@@ -58,6 +58,7 @@ class Docs(unittest.TestCase):
             if name == "check":
                 continue
             env = dict(os.environ, USAGE_STORE=str(ROOT / "tests" / "no-such-store"))
+            env.pop("DATA_REPO", None)  # export/import/verify: never the caller's data repo
             r = subprocess.run([str(ROOT / "usage"), name, "--no-such-flag"], capture_output=True, text=True, env=env)
             self.assertNotIn("unknown command", r.stderr, name)
             self.assertEqual(r.returncode, 2, name)

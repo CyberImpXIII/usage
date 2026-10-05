@@ -15,7 +15,7 @@ import time
 
 from pathlib import Path
 
-from . import calc, config, export, store
+from . import calc, config, datarepo, export, store
 
 HELP = """\
   usage status                   latest 5h and 7d %, resets, time since the sample
@@ -30,6 +30,9 @@ HELP = """\
   usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE); the reporters write nothing without it
   usage registrations [--export [FILE]]   the status line and three hook registrations, as JSON; --export copies FILE
                                  (default ~/.claude/settings.json) with them added to FILE.proposed and never writes FILE
+  usage export [--json]          write the ledgers (samples, tokens, hits; never limits.json or state/) into $DATA_REPO/usage/
+  usage import [--json]          recreate the ledgers from $DATA_REPO/usage/ when the store holds no row, then verify
+  usage verify [--json]          compare the store with $DATA_REPO/usage/: same, differs or missing per item; exit 1 unless all same
 """
 
 
@@ -200,10 +203,95 @@ def cmd_registrations(args):
     return 0
 
 
+# --- export / import / verify (PLAN-repo-setup.md §7.11; contract: usagelib/datarepo.py)
+
+def _json_flag(args):
+    if args not in ([], ["--json"]):
+        raise SystemExit(_usage_error(f"takes nothing or --json, got {' '.join(args)!r}"))
+    return bool(args)
+
+
+def _fail(as_json, verb, msg, findings=()):
+    """Exit 2. Findings name places, never values (datarepo.problems)."""
+    if as_json:
+        print(json.dumps({"error": msg, **({"findings": list(findings)} if findings else {})}, indent=2))
+    else:
+        sys.stderr.write(f"usage {verb}: {msg}\n" + "".join(f"  {f}\n" for f in list(findings)[:10]))
+        if len(findings) > 10:
+            sys.stderr.write(f"  ... {len(findings) - 10} more\n")
+    return 2
+
+
+def _data_dir(as_json, verb):
+    repo = os.environ.get("DATA_REPO")
+    if not repo:
+        return None, _fail(as_json, verb, "DATA_REPO is not set: no data repo (the caller supplies it)")
+    if not os.path.isdir(repo):
+        return None, _fail(as_json, verb, f"DATA_REPO is set but is not a folder: {repo}")
+    return datarepo.export_dir(repo), 0
+
+
+def _verify_report(as_json, report):
+    items = report["items"]
+    if as_json:
+        print(json.dumps(report, indent=2))
+    else:
+        s = datarepo.summary(items)
+        print(f"verify: {len(items)} items: " + ", ".join(f"{v} {k}" for k, v in s.items()))
+        for i in items:
+            if i["status"] != "same":
+                print(f"  {i['status']:<11} {i['item']}" + (f"  ({i['detail']})" if i.get("detail") else ""))
+    return 0 if all(i["status"] == "same" for i in items) else 1
+
+
+def cmd_export(args):
+    as_json = _json_flag(args)
+    out, code = _data_dir(as_json, "export")
+    if out is None:
+        return code
+    try:
+        r = datarepo.write_export(out)
+    except datarepo.ExportError as e:
+        return _fail(as_json, "export", str(e), e.findings)
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return 0
+    rows = ", ".join(f"{n} {k}" for n, k in r["rows"].items())
+    print(f"export: {rows} rows -> {r['dir']}: {r['written']} files written, {r['unchanged']} unchanged, "
+          f"{r['removed']} removed")
+    for n, lines in r["skipped"].items():
+        print(f"  {n}: {len(lines)} malformed line(s) not exported (the reader skips them too): "
+              + ", ".join(map(str, lines[:10])))
+    return 0
+
+
+def cmd_import(args):
+    as_json = _json_flag(args)
+    out, code = _data_dir(as_json, "import")
+    if out is None:
+        return code
+    try:
+        r = datarepo.import_into(out)
+    except datarepo.ExportError as e:
+        return _fail(as_json, "import", str(e), e.findings)
+    if not as_json:
+        print(f"import: {', '.join(f'{n} {k}' for n, k in r['rows'].items())} rows from {r['dir']} -> {r['store']}")
+    return _verify_report(as_json, datarepo.verify(out))
+
+
+def cmd_verify(args):
+    as_json = _json_flag(args)
+    out, code = _data_dir(as_json, "verify")
+    if out is None:
+        return code
+    return _verify_report(as_json, datarepo.verify(out))
+
+
 COMMANDS = {
     "status": cmd_status, "burn": cmd_burn, "project": cmd_project, "gate": cmd_gate,
     "hits": cmd_hits, "tokens": cmd_tokens, "calibrate": cmd_calibrate, "check": cmd_check,
     "init": cmd_init, "registrations": cmd_registrations,
+    "export": cmd_export, "import": cmd_import, "verify": cmd_verify,
 }
 
 

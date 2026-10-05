@@ -29,6 +29,9 @@ repo. No script runs a model: the cost is a few milliseconds of Python per event
   usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE); the reporters write nothing without it
   usage registrations [--export [FILE]]   the status line and three hook registrations, as JSON; --export copies FILE
                                  (default ~/.claude/settings.json) with them added to FILE.proposed and never writes FILE
+  usage export [--json]          write the ledgers (samples, tokens, hits; never limits.json or state/) into $DATA_REPO/usage/
+  usage import [--json]          recreate the ledgers from $DATA_REPO/usage/ when the store holds no row, then verify
+  usage verify [--json]          compare the store with $DATA_REPO/usage/: same, differs or missing per item; exit 1 unless all same
 ```
 
 `cli.json` declares the same commands as its verbs (PLAN-routing-tree.md §14.8;
@@ -72,6 +75,28 @@ tool is inert until someone sets it up.
 Each message is counted once, at the maximum of each usage field across its
 streamed lines; `<synthetic>` and non-JSON lines are skipped; a partial last line
 waits for its newline. Every write holds `.lock` (flock).
+
+## The export (data repo)
+
+PLAN-repo-setup.md §7.11: the store stays the one source, and `$DATA_REPO/usage/`
+holds its serialised form, so a fresh machine can get its history back
+(`usage import`) and `tools/checks`' `stores-exported` can tell whether the
+export is current (`usage verify --json`). `usagelib/datarepo.py` holds the
+contract; in short:
+
+| store file | exported? | why |
+|---|---|---|
+| `samples.tsv`, `tokens.tsv`, `hits.tsv` | yes, as the reader reads them | history: what %/token, `burn` and `calibrate` are measured from, and nothing can regenerate it |
+| `limits.json` | no | the latest sample, stale in minutes; a restored copy would be a wrong answer |
+| `state/` | no | this machine's transcript offsets, keyed by local paths |
+| `.lock` | no | the write lock |
+
+Every cell must fit its column's shape, and the free-text columns (session,
+agent_type, model) may hold no run of 20+ letters and digits: a misfit stops the
+export or the import, named by file, line and column, never by value. Import
+never writes into a store whose ledgers hold a row. Nothing here sets
+`DATA_REPO`: the caller supplies it. `tests/test_datarepo.py` holds each of
+these, in scratch folders only.
 
 ## Fails open
 

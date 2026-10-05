@@ -38,8 +38,13 @@ class Case(unittest.TestCase):
         self.tmp.chmod(0o755)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def env(self, now=None):
+    def env(self, now=None, data=None):
+        """The caller's DATA_REPO never reaches a test: only `data` (a scratch
+        folder) is passed on, so no test can write into a real data repo."""
         e = dict(os.environ, USAGE_STORE=str(self.store), HOME=str(self.home), TZ="UTC")
+        e.pop("DATA_REPO", None)
+        if data is not None:
+            e["DATA_REPO"] = str(data)
         t = now if now is not None else self.now
         if t is not None:
             e["USAGE_NOW"] = str(epoch(t) if isinstance(t, str) else t)
@@ -52,9 +57,9 @@ class Case(unittest.TestCase):
         return subprocess.run([str(SCRIPTS[name]), *args], input=data, capture_output=True,
                               text=True, env=self.env(now), timeout=60)
 
-    def cli(self, *args, now=None):
+    def cli(self, *args, now=None, data=None):
         return subprocess.run([str(CLI), *args], capture_output=True, text=True,
-                              env=self.env(now), timeout=120)
+                              env=self.env(now, data), timeout=120)
 
     def rows(self, name):
         p = self.store / name

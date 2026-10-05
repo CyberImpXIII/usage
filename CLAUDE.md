@@ -21,6 +21,10 @@ Rules of this repo alone:
   (`tests/test_settings.py`, `tests/test_export.py`).
 - **Thresholds move only by a reviewed commit to `usage.json`**, read only through
   `config.setting()`; `usage calibrate` proposes, never applies.
+- **Export only what `usagelib/datarepo.py`'s CLASSES allows** (the three
+  ledgers; never limits.json or state/), and never set `DATA_REPO`: the caller
+  supplies it, and tests run on scratch folders (`tests/helpers.py` drops the
+  caller's; `tests/test_datarepo.py`).
 - **Read nothing of the workspace's delegation layer and name no roster agent**
   (the shared `no-roster` check, run by the `shared` gate).
 
