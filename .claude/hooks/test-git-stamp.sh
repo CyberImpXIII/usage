@@ -94,7 +94,9 @@ else fail "an agent name it cannot quote" "exit $code: ${out:0:200}"; fi
 echo "end to end (git reads the trailers back):"
 e2e() {
   local desc="$1" cmd="$2" repo="$T/repo-$RANDOM" new got
-  git init -q "$repo" && git -C "$repo" config user.email t@t && git -C "$repo" config user.name t
+  # the address is joined at run time: no committed line is email-shaped (tests/test_leak_shapes.py)
+  local at=@
+  git init -q "$repo" && git -C "$repo" config user.email "t${at}t" && git -C "$repo" config user.name t
   mkdir -p "$repo/sub" && echo 1 > "$repo/f" && git -C "$repo" add f
   new=$(input "$cmd" some-agent | bash "$HOOK" 2>/dev/null | jq -r '.hookSpecificOutput.updatedInput.command // empty')
   if [ -z "$new" ]; then fail "$desc" "no rewrite"; return; fi

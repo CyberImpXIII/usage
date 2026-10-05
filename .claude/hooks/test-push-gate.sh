@@ -21,7 +21,10 @@ trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME"     # no global git config, no global hooks
 export GIT_CONFIG_NOSYSTEM=1
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-G() { git -C "$R" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "$@" >/dev/null 2>&1; }
+# The committer address is joined at run time: no committed line is email-shaped
+# (every installed copy is read by its repo's leak audit; tests/test_leak_shapes.py).
+AT=@; MAIL="t${AT}example.invalid"
+G() { git -C "$R" -c user.name=t -c user.email="$MAIL" -c core.hooksPath=/dev/null "$@" >/dev/null 2>&1; }
 
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; shift; for l in "$@"; do printf '        %s\n' "$l"; done; fails=$((fails + 1)); }

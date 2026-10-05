@@ -15,9 +15,11 @@ trap 'rm -rf "$T"' EXIT
 pass() { printf '  ok    %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; shift; for l in "$@"; do printf '        %s\n' "$l"; done; fails=$((fails + 1)); }
 
+# The recipient is joined at run time: no committed line is email-shaped
+# (tests/test_leak_shapes.py). The hook does not read it; a send just carries one.
 input() {
-  jq -nc --arg tool "$1" --arg t "${2:-}" \
-    '{hook_event_name:"PreToolUse",session_id:"s",cwd:"/x",tool_name:$tool,tool_input:{to:"a@b.c",body:"hi"}}
+  jq -nc --arg tool "$1" --arg t "${2:-}" --arg to "a@""b.c" \
+    '{hook_event_name:"PreToolUse",session_id:"s",cwd:"/x",tool_name:$tool,tool_input:{to:$to,body:"hi"}}
      + (if $t == "" then {} else {agent_type:$t, agent_id:"a1"} end)'
 }
 

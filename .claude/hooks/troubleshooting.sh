@@ -17,12 +17,17 @@
 # WHY THIS IS A HOOK AND NOT A RULE. Two documented rules that nothing enforced:
 #
 #   1. CLAUDE.md rule 3 on `blocked-attn`: "you are stuck; the next step needs
-#      the user. Do NOT retry, that already failed." engine.js DOES refuse a
-#      non-working recipe -- but only when `allowUnverified` is absent, and
+#      the user. Do NOT retry, that already failed." engine.js's status gate
+#      refused a non-working recipe only when `allowUnverified` was absent, and
 #      lab.js passes `allowUnverified: true` on every run by design, because
 #      that is how a candidate gets exercised at all. So the one documented
 #      "never do this" was reachable through the tool an agent troubleshooting a
-#      recipe reaches for first. That is the gap this closes.
+#      recipe reaches for first. That is the gap this closed. Since site-scrapers
+#      c6e4243 (blocked-guard) the CLI itself refuses a blocked-attn recipe
+#      unless the run is attended (`--attended` or {"attended":true}), whatever
+#      `allowUnverified` says; this hook stays as the earlier layer that says
+#      why and names the next step. The block message states that rule, and
+#      test-troubleshooting.sh pins its wording.
 #
 #   2. docs/diagnosing.md opens with "Check what has broken before, first" --
 #      `node failures.js match <hostname>`. A second database exists purely to
@@ -130,9 +135,10 @@ if [ "$runs" = true ] && [ "$status" = "blocked-attn" ] \
     echo
     echo "Otherwise surface it to the user and move on to other work."
     echo
-    echo "engine.js refuses a non-working recipe on its own, but only when"
-    echo "allowUnverified is absent — and lab.js sets it on every run, which is how"
-    echo "this state stayed reachable."
+    echo "The CLI refuses this run too (site-scrapers blocked-guard): engine.js, and"
+    echo "so scrape.sh, lab.js and verify.js, refuses a blocked-attn recipe unless"
+    echo "--attended is given (or \"attended\": true in the params); allowUnverified"
+    echo "does not open it. This hook says why before the run starts."
   } >&2
   exit 2
 fi
