@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Installed by the setup tool (the githooks component; PLAN-hard-gates.md §3 rows
+# 3 and 6, §7 phase 2). Do not edit this copy: setup reports a changed one as
+# drift. Runs once core.hooksPath points at this folder. Refuses the commit when:
+#   1. the staged tree is not one `./dev.sh check` passed on (check-pass match:
+#      the repo's check records its pass with `.githooks/check-pass record`);
+#   2. the shared checks' no-secrets is not ok on this repo. The checks CLI is the
+#      one setup was given (--checks), kept in this clone's own git config
+#      (githooks.checks), never in a tracked file. Not configured, not runnable,
+#      or a report it cannot read: refused, never a pass.
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+top=$(git rev-parse --show-toplevel) || exit 1
+
+"$here/check-pass" match || exit 1
+
+checks=$(git config --get githooks.checks)
+if [ -z "$checks" ] || [ ! -x "$checks" ]; then
+  echo "pre-commit: refused: no runnable shared checks CLI in git config githooks.checks (${checks:-unset}); re-run setup with --checks CLI" >&2
+  exit 1
+fi
+command -v jq >/dev/null 2>&1 || { echo "pre-commit: refused: jq is needed to read the no-secrets report" >&2; exit 1; }
+out=$("$checks" one no-secrets "$top" --json 2>/dev/null)
+status=$(printf '%s' "$out" | jq -r 'if (.results | type) == "array" and (.results | length) == 1 and .results[0].check == "no-secrets" then .results[0].status else "unreadable" end' 2>/dev/null)
+if [ "$status" != ok ]; then
+  echo "pre-commit: refused: no-secrets is ${status:-unreadable} on $top" >&2
+  printf '%s' "$out" | jq -r '.results[]?.lines[]?' 2>/dev/null | head -n 20 >&2
+  exit 1
+fi

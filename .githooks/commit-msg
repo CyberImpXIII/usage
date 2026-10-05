@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Installed by the setup tool (the githooks component; PLAN-hard-gates.md §2, §7
+# phase 2, §8 answer 2). Do not edit this copy: setup reports a changed one as
+# drift. Runs once core.hooksPath points at this folder.
+#
+# WHO MADE THE COMMIT. The `Agent:` trailer names it.
+#   - Inside a Claude Code session (CLAUDECODE set in the environment, as every
+#     Bash call of a session has it): the commit must already carry `Agent: <name>`,
+#     which the shared git-stamp.sh hook writes from the hook input. No trailer, an
+#     empty one, or `Agent: jacob` is refused: a session never commits as Jacob.
+#   - Outside a session (no CLAUDECODE): the commit is Jacob's own, from his
+#     terminal; `Agent: jacob` is added when no Agent trailer is there. One already
+#     there is kept.
+# WHAT CHECKED IT. A `check:` trailer is written from the recorded check pass
+# (check-pass, beside this file): `check: full`, `check: resumed from K/N (tree
+# T)` (PLAN-check-progress.md §9.2), or `check: none` when no recorded pass is
+# of the tree being committed (a merge, say, which skips pre-commit). Any
+# `check:` already in the message is replaced: it is this commit's, not a
+# copied one.
+# Never skipped by this hook; `git commit --no-verify` skips every git hook, which
+# no git-side hook can see.
+set -uo pipefail
+
+msg=${1:?commit-msg: no message file}
+here=$(cd "$(dirname "$0")" && pwd)
+
+agents=$(git interpret-trailers --parse "$msg" | sed -n 's/^Agent: *//p')
+
+if [ -n "${CLAUDECODE:-}" ]; then
+  if [ -z "$agents" ]; then
+    echo "commit-msg: refused: a commit made inside a Claude Code session carries no Agent: trailer (the shared git-stamp.sh hook writes it; it is not registered here, or could not read the command)" >&2
+    exit 1
+  fi
+  while IFS= read -r a; do
+    case "$a" in
+      ''|jacob)
+        echo "commit-msg: refused: Agent: ${a:-(empty)} inside a Claude Code session; only Jacob's own terminal commits are Agent: jacob" >&2
+        exit 1 ;;
+    esac
+  done <<< "$agents"
+elif [ -z "$agents" ]; then
+  git interpret-trailers --in-place --trailer "Agent: jacob" "$msg" || exit 1
+fi
+
+tree=$(git write-tree 2>/dev/null) || { echo "commit-msg: git write-tree failed" >&2; exit 1; }
+if [ -x "$here/check-pass" ] && "$here/check-pass" match >/dev/null 2>&1; then
+  check=$("$here/check-pass" trailer) || exit 1
+else
+  check="none (tree ${tree:0:12} has no recorded check pass)"
+fi
+git -c trailer.check.ifexists=replace interpret-trailers --in-place --trailer "check: $check" "$msg" || exit 1

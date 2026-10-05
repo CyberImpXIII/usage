@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Installed by the setup tool (the githooks component). Do not edit this copy:
+# setup reports a changed one as drift. The ONE place a check pass is recorded and
+# matched, so the writer and the reader cannot disagree about the fingerprint
+# (PLAN-hard-gates.md §3 row 3, §6 "the check-pass fingerprint").
+#
+#   check-pass tree
+#       prints the working tree's id. The repo's `./dev.sh check` takes it before
+#       its first gate, so an edit made while the gates run is never recorded as
+#       checked.
+#   check-pass record [--from TREE] [--resumed-from K/N]
+#       `./dev.sh check` runs this last, once every gate passed: records the tree it
+#       checked. --from TREE (from `tree`): records nothing, and fails, when the
+#       tree changed since. --resumed-from: the pass resumed from breakpoint K of N
+#       (PLAN-check-progress.md §7, §9.2); the commit's `check:` trailer says so.
+#   check-pass match      (pre-commit) exit 0 only when the staged tree is the recorded one
+#   check-pass trailer    (commit-msg) the `check:` trailer's value for the recorded pass
+#
+# The tree is a git tree id: for `tree` and `record`, what `git add --all` would
+# stage from the working tree (tracked and untracked files, ignored ones left
+# out, and .claude/state/, where this record and the shared hooks' ledger live),
+# built in a throwaway index, never the real one; for `match`, `git write-tree`
+# of the index being committed. So a commit is accepted only when it holds
+# exactly what was checked: an edit after the pass, or a change the pass saw left
+# unstaged, is refused.
+# The record: .claude/state/check-pass, `key value` lines: tree, resumed_from
+# (K/N, or - for a full pass), head, time.
+set -uo pipefail
+
+top=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "check-pass: not in a git work tree" >&2; exit 2; }
+stamp="$top/.claude/state/check-pass"
+
+worktree_tree() {
+  local idx real rc
+  idx=$(mktemp "${TMPDIR:-/tmp}/check-pass-index.XXXXXX") || return 1
+  real=$(git -C "$top" rev-parse --path-format=absolute --git-path index)
+  if [ -f "$real" ]; then cp "$real" "$idx"; else rm -f "$idx"; fi
+  # (an exclude pathspec is not used: git refuses one naming an ignored folder)
+  GIT_INDEX_FILE="$idx" git -C "$top" add --all >/dev/null 2>&1 \
+    && GIT_INDEX_FILE="$idx" git -C "$top" rm -r -q --cached --ignore-unmatch -- .claude/state >/dev/null 2>&1 \
+    && GIT_INDEX_FILE="$idx" git -C "$top" write-tree
+  rc=$?
+  rm -f "$idx"
+  return $rc
+}
+
+field() {
+  sed -n "s/^$1 //p" "$stamp" 2>/dev/null | head -n 1
+}
+
+case "${1:-}" in
+  tree)
+    worktree_tree || { echo "check-pass: could not read the working tree" >&2; exit 1; }
+    ;;
+  record)
+    shift
+    resumed=- from=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --resumed-from)
+          case "${2:-}" in
+            [0-9]*/[0-9]*) resumed=$2 ;;
+            *) echo "check-pass: --resumed-from takes K/N" >&2; exit 2 ;;
+          esac
+          shift 2 ;;
+        --from)
+          [ -n "${2:-}" ] || { echo "check-pass: --from takes the tree \`check-pass tree\` printed" >&2; exit 2; }
+          from=$2; shift 2 ;;
+        *) echo "check-pass: unknown argument: $1" >&2; exit 2 ;;
+      esac
+    done
+    tree=$(worktree_tree) || { echo "check-pass: could not read the working tree" >&2; exit 1; }
+    if [ -n "$from" ] && [ "$from" != "$tree" ]; then
+      echo "check-pass: not recorded: the tree changed while the check ran (${from:0:12} -> ${tree:0:12}); run the check again" >&2
+      exit 1
+    fi
+    head=$(git -C "$top" rev-parse -q --verify HEAD 2>/dev/null || echo -)
+    mkdir -p "$(dirname "$stamp")" || exit 1
+    printf 'tree %s\nresumed_from %s\nhead %s\ntime %s\n' "$tree" "$resumed" "$head" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stamp" || exit 1
+    echo "check-pass: recorded tree ${tree:0:12}"
+    ;;
+  match)
+    want=$(field tree)
+    if [ -z "$want" ]; then
+      echo "check-pass: refused: no check pass recorded; run ./dev.sh check (it records its pass), then commit" >&2
+      exit 1
+    fi
+    got=$(git write-tree 2>/dev/null) || { echo "check-pass: git write-tree failed" >&2; exit 1; }
+    if [ "$got" != "$want" ]; then
+      echo "check-pass: refused: the staged tree ${got:0:12} is not the one ./dev.sh check passed (${want:0:12}): an edit since the pass, or a change the pass saw that is not staged. Run ./dev.sh check on exactly what you commit" >&2
+      exit 1
+    fi
+    ;;
+  trailer)
+    tree=$(field tree)
+    [ -n "$tree" ] || { echo "check-pass: no check pass recorded" >&2; exit 1; }
+    resumed=$(field resumed_from)
+    if [ -z "$resumed" ] || [ "$resumed" = - ]; then
+      echo "full"
+    else
+      echo "resumed from $resumed (tree ${tree:0:12})"
+    fi
+    ;;
+  *)
+    echo "usage: check-pass tree | record [--from TREE] [--resumed-from K/N] | match | trailer" >&2
+    exit 2
+    ;;
+esac

@@ -4,3 +4,5 @@
 *.env
 *.bak
 __pycache__/
+registry.proposed.json
+.claude/state/
