@@ -7,12 +7,6 @@
   `~/.claude/settings.json.proposed`, never the live file), review it, copy it
   over `~/.claude/settings.json`, then `./usage init`. Until then `status` and
   `gate` answer "no sample", and `gate` holds.
-- **`shared:hooks-installed` is red on 3 drifted copies** (setup run,
-  PLAN-repo-setup §7.12 step 2, 2026-10-05): setup installed the 11 hooks,
-  their tests and `.claude/lib/{ledger,write-targets}.sh`, and left
-  `.claude/hooks/{troubleshooting,test-troubleshooting,test-prefer-recipes}.sh`
-  byte-unchanged as `drift` (logic differs from tools/hooks/source;
-  `hooks copies` agrees). Replacing them (`--rebuild`) waits on Jacob.
 - **Setup's other outputs wait on Jacob** (same run): `.claude/settings.json`
   lacks 12 registrations; the proposal is `.claude/settings.proposed.json`
   (gitignored), applied by `cp` over settings.json, Jacob's step. `.githooks/`
