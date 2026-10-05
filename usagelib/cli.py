@@ -1,7 +1,10 @@
 """The `usage` CLI: reads the store, never the reporters' input.
 
 HELP is the documented command list; README.md carries the same block, and
-tests/test_docs.py holds README == HELP == the dispatch table, both ways.
+tests/test_docs.py holds README == HELP == the dispatch table == cli.json's
+verbs, both ways. Its lines are indented two spaces because tools/checks reads
+a CLI's commands from the indented lines of its help (accessor's
+verb-implemented rule).
 """
 import json
 import os
@@ -10,20 +13,23 @@ import subprocess
 import sys
 import time
 
-from . import calc, config, store
+from pathlib import Path
+
+from . import calc, config, export, store
 
 HELP = """\
-usage status                   latest 5h and 7d %, resets, time since the sample
-usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
-usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
-usage gate <tokens>            exit 0 if <tokens> fit before the window's reset under the burn so far;
-                               exit 1 with "hold until <time>" otherwise. The hub's question.
-usage hits [--since D]         rate-limit hits with the sample that preceded each; flags one below the hold threshold
-usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
-usage calibrate                proposes thresholds from the hits so far; never applies them
-usage check [--json]           the gates (devtools/check.py; the same as ./dev.sh check)
-usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE); the reporters write nothing without it
-usage registrations            the status line and three hook registrations, as JSON, for a settings proposal (never written here)
+  usage status                   latest 5h and 7d %, resets, time since the sample
+  usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
+  usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
+  usage gate <tokens>            exit 0 if <tokens> fit before the window's reset under the burn so far;
+                                 exit 1 with "hold until <time>" otherwise. The hub's question.
+  usage hits [--since D]         rate-limit hits with the sample that preceded each; flags one below the hold threshold
+  usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
+  usage calibrate                proposes thresholds from the hits so far; never applies them
+  usage check [--json]           the gates (devtools/check.py; the same as ./dev.sh check)
+  usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE); the reporters write nothing without it
+  usage registrations [--export [FILE]]   the status line and three hook registrations, as JSON; --export copies FILE
+                                 (default ~/.claude/settings.json) with them added to FILE.proposed and never writes FILE
 """
 
 
@@ -172,23 +178,25 @@ def cmd_init(args):
     return 0
 
 
-def registrations():
-    def cmd(name):
-        return shlex.quote(str(config.TOOL / name))
-    return {
-        "statusLine": {"type": "command", "command": cmd("usage-statusline.sh")},
-        "hooks": {
-            "Stop": [{"hooks": [{"type": "command", "command": cmd("usage-stop.sh"), "timeout": 10}]}],
-            "SubagentStop": [{"hooks": [{"type": "command", "command": cmd("usage-stop.sh"), "timeout": 10}]}],
-            "StopFailure": [{"matcher": "rate_limit",
-                             "hooks": [{"type": "command", "command": cmd("usage-failure.sh"), "timeout": 10}]}],
-        },
-    }
-
-
 def cmd_registrations(args):
-    _opts(args, ())
-    print(json.dumps(registrations(), indent=2))
+    if not args:
+        print(json.dumps(export.registrations(), indent=2))
+        return 0
+    if args[0] != "--export" or len(args) > 2:
+        return _usage_error(f"registrations takes nothing or --export [FILE], got {' '.join(args)!r}")
+    path = Path(args[1]).expanduser() if len(args) == 2 else export.default_file()
+    proposal = path.with_name(path.name + export.SUFFIX)
+    try:
+        status, report, target = export.export(path)
+    except export.ExportError as e:
+        left = f"; the existing {proposal} was left as it was" if proposal.exists() or proposal.is_symlink() else ""
+        sys.stderr.write(f"usage registrations --export: {path} {e}: no proposal written{left}\n")
+        return 1
+    print(f"{status}: {target}  (from {path}, which is not touched)")
+    for line in report:
+        print(f"  {line}")
+    print(f"next (Jacob): diff {shlex.quote(str(path))} {shlex.quote(str(target))}; "
+          f"cp {shlex.quote(str(target))} {shlex.quote(str(path))}; usage init")
     return 0
 
 

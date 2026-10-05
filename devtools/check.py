@@ -3,7 +3,7 @@
 
   test    the unittest suite (tests/), the §4 gates of PLAN-usage-reporting.md
   files   every script the registrations and the CLI need: present, executable,
-          parses; usage.json parses
+          parses; usage.json, cli.json and checks.json parse
   hooks   the shared hook copies in .claude/hooks/ pass their own tests
   shared  tools/checks' generic gates (`checks run . --json`), one entry each as
           shared:<name>; UNCHECKED, never ok, when that sibling is absent.
@@ -92,10 +92,11 @@ def gate_files():
             compile(p.read_text(), str(p), "exec")
         except SyntaxError as e:
             found.append(failure(f"does not compile: {e.msg}", str(p.relative_to(ROOT)), e.lineno))
-    try:
-        json.loads((ROOT / "usage.json").read_text())
-    except (OSError, ValueError) as e:
-        found.append(failure(f"usage.json: {e}", "usage.json"))
+    for name in ("usage.json", "cli.json", "checks.json"):
+        try:
+            json.loads((ROOT / name).read_text())
+        except (OSError, ValueError) as e:
+            found.append(failure(f"{name}: {e}", name))
     return result("files", found)
 
 

@@ -5,23 +5,35 @@
 - **No GitHub repo yet.** Built 2026-10-05 as a local repo with no `origin`;
   creating it (`setup --github`, PLAN-usage-reporting.md §5 phase 1) waits on
   Jacob's yes. Until then commits stay local and nothing is pushed.
-- **The tool is inert until phase 2.** Nothing is registered and no store exists:
-  Jacob wires the output of `usage registrations` (status line, Stop,
-  SubagentStop, StopFailure) and runs `usage init`. Until then `status` and
+- **The tool is inert until phase 2.** Nothing is registered and no store exists.
+  Jacob's steps: `./usage registrations --export` (writes
+  `~/.claude/settings.json.proposed`, never the live file), review it, copy it
+  over `~/.claude/settings.json`, then `./usage init`. Until then `status` and
   `gate` answer "no sample", and `gate` holds.
+- **`shared:hooks-installed` is red in place** (2026-10-05): `.claude/lib/write-targets.sh`
+  missing here. Not from the §9 export change (it touches no `.claude/` path);
+  the same check on a copy of HEAD outside the workspace printed OK, so it
+  depends on where the repo sits. Fix: install the shared lib copy from
+  tools/hooks/source (`./setup` for this repo), a step for this repo's owner.
 - **`state/` grows with each transcript** (one file per transcript, a per-message
   map inside). Nothing prunes it. Harmless at our volume; a `usage prune` is the
   fix if it ever matters.
 
 ## Open decisions
 
-- **Where the registrations reach a settings proposal.** Plan §7 says setup's
-  component writes them into `settings.proposed.json`; setup refuses a path
-  that is not a repo, and the user-level settings these belong in are not a
-  repo. Built: the tool only prints them (`usage registrations`); the plan's
-  author decides who merges them (setup component, the delegation layer's
-  wiring file, or Jacob by hand). Hinges on: which owner holds user-level
-  settings proposals.
+- **`cli.json` vs two tools/checks rules (open, reported 2026-10-05).** §9 wants
+  the verbs declared in `cli.json`; the store is outside the repo
+  (`~/.claude/usage/`), which `schema/cli.schema.json` cannot express
+  (paths-inside). Declared as `~/.claude/usage/<ledger>`: checks' `inside()`
+  accepts a `~`-path as repo-relative, so accessor passes and its part-3 audit
+  (no file outside usagelib/ names a ledger) really runs. If checks starts
+  rejecting `~`, accessor goes red here, which is the right signal. Second: the
+  in-progress (uncommitted on 2026-10-05 03:20) `stores-exported` check fails any
+  cli.json without a `verify` verb; this store is per-machine run state with no
+  data-repo export (PLAN-repo-setup.md §7.11 lists run state as not exported), so
+  `./dev.sh check` is red on `shared:stores-exported` until checks can tell run
+  state from an exported store. Hinges on: checks' owner (schema field for an
+  outside / run-state store). Not worked around with an empty `verify` verb.
 - **Mutation testing waits on a shared `checks mutants`** (tools/todo td-9)
   rather than a third copy of mutate.py here.
 - **`--json` for `status` and `gate`** is not built; the hub (phase 4) decides
@@ -62,6 +74,11 @@
   transcript reader (`tokens.jq`) on `tools/usage/tests/fixtures/transcript/`
   (turn1-3 concatenated) and compares with `expected.json`'s `by_model`, so the
   two copies of the dedupe rule cannot drift. This tool may not read that layer.
-- **Same owner and setup's owner, 2026-10-05:** the registrations (decision
-  above), and `CHECKS_ROSTER_NAMES` for this repo's check, so no-roster's names
-  half runs here instead of reporting UNCHECKED.
+- **Same owner and setup's owner, 2026-10-05:** `CHECKS_ROSTER_NAMES` for this
+  repo's check, so no-roster's names half runs here instead of reporting
+  UNCHECKED. (The registrations question is settled: §9, `--export`.)
+- **tools/checks' owner, 2026-10-05 (via the dispatcher):** (1) `cli.schema.json`
+  has no way to declare a store outside the repo; (2) `contract.inside()` returns
+  True for `~/.claude/usage/x` (a `~` path read as repo-relative); (3)
+  `stores-exported` (uncommitted then) requires `verify` on every cli.json, with
+  no way to say "run state, not exported". Decision above.

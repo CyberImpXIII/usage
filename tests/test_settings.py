@@ -1,6 +1,9 @@
 """§4 "settings are Jacob's": no command or reporter writes a settings.json.
-The registrations are printed (`usage registrations`) for a proposal someone
-else writes; this tool never writes a settings file of any name."""
+`usage registrations` prints the registrations; `usage registrations --export`
+(§9) writes them only into `<file>.proposed` beside the settings file, which
+Jacob copies over himself. Only usagelib/export.py may name a settings file,
+and running every command, the export included, leaves both settings files
+byte- and mtime-identical."""
 import json
 import os
 import re
@@ -9,6 +12,7 @@ import unittest
 
 from tests.helpers import FIXTURES, ROOT, Case, statusline_input
 
+WRITES = re.compile(r"\.write_(?:text|bytes)\(|open\([^)]*['\"][wax+]")
 RUNTIME = [ROOT / "usage", *sorted(ROOT.glob("usage-*.sh")), *sorted((ROOT / "usagelib").glob("*.py"))]
 
 
@@ -35,20 +39,38 @@ class SettingsUntouched(Case):
         run([str(ROOT / "usage-stop.sh")], json.dumps({"hook_event_name": "Stop", "transcript_path": str(transcript)}))
         run([str(ROOT / "usage-failure.sh")], json.dumps({"hook_event_name": "StopFailure", "error": "rate_limit"}))
         for argv in (["status"], ["burn"], ["project"], ["gate", "1000"], ["hits"], ["tokens"], ["calibrate"],
-                     ["registrations"]):
+                     ["registrations"], ["registrations", "--export"], ["registrations", "--export", str(project)]):
             run([str(ROOT / "usage"), *argv])
+        self.assertTrue((self.home / ".claude" / "settings.json.proposed").is_file(), "the export wrote nothing")
+        self.assertTrue((project.parent / "settings.json.proposed").is_file())
         store = self.home / ".claude" / "usage"
         self.assertTrue((store / "samples.tsv").exists(), "the run wrote nothing, so the test proves nothing")
         self.assertTrue((store / "tokens.tsv").exists())
         self.assertTrue((store / "hits.tsv").exists())
         after = {p: (p.read_bytes(), p.stat().st_mtime) for p in (user, project)}
         self.assertEqual(after, before)
-        self.assertEqual(sorted(p.name for p in (self.home / ".claude").iterdir()), ["settings.json", "usage"])
-        self.assertEqual(sorted(p.name for p in project.parent.iterdir()), ["settings.json"])
+        self.assertEqual(sorted(p.name for p in (self.home / ".claude").iterdir()),
+                         ["settings.json", "settings.json.proposed", "usage"])
+        self.assertEqual(sorted(p.name for p in project.parent.iterdir()), ["settings.json", "settings.json.proposed"])
 
-    def test_no_runtime_file_names_a_settings_file(self):
-        offenders = [p.name for p in RUNTIME if re.search(r"settings(\.proposed)?\.json", p.read_text())]
+    def test_only_the_export_names_a_settings_file(self):
+        """export.py reads and proposes; cli.py names the default in its help
+        and writes no file at all."""
+        offenders = [p.name for p in RUNTIME if p.name not in ("export.py", "cli.py")
+                     and re.search(r"settings(\.proposed)?\.json", p.read_text())]
         self.assertEqual(offenders, [])
+        self.assertEqual(WRITES.findall((ROOT / "usagelib" / "cli.py").read_text()), [])
+
+    def test_the_export_opens_for_writing_only_its_temp_file(self):
+        """The one write in export.py is mkstemp's descriptor beside the
+        proposal, renamed onto it; no other open for writing, write_text or
+        write_bytes."""
+        text = (ROOT / "usagelib" / "export.py").read_text()
+        self.assertEqual(WRITES.findall(text), ['open(fd, "w'])
+        self.assertIn("fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + \".\")", text)
+        self.assertEqual(len(re.findall(r"os\.replace\(", text)), 1)
+        self.assertIn("os.replace(tmp, target)", text)
+        self.assertIn("target = path.with_name(path.name + SUFFIX)", text)
 
 
 class Registrations(unittest.TestCase):

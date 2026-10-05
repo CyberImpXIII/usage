@@ -17,19 +17,22 @@ repo. No script runs a model: the cost is a few milliseconds of Python per event
 ## Commands
 
 ```
-usage status                   latest 5h and 7d %, resets, time since the sample
-usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
-usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
-usage gate <tokens>            exit 0 if <tokens> fit before the window's reset under the burn so far;
-                               exit 1 with "hold until <time>" otherwise. The hub's question.
-usage hits [--since D]         rate-limit hits with the sample that preceded each; flags one below the hold threshold
-usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
-usage calibrate                proposes thresholds from the hits so far; never applies them
-usage check [--json]           the gates (devtools/check.py; the same as ./dev.sh check)
-usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE); the reporters write nothing without it
-usage registrations            the status line and three hook registrations, as JSON, for a settings proposal (never written here)
+  usage status                   latest 5h and 7d %, resets, time since the sample
+  usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
+  usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
+  usage gate <tokens>            exit 0 if <tokens> fit before the window's reset under the burn so far;
+                                 exit 1 with "hold until <time>" otherwise. The hub's question.
+  usage hits [--since D]         rate-limit hits with the sample that preceded each; flags one below the hold threshold
+  usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
+  usage calibrate                proposes thresholds from the hits so far; never applies them
+  usage check [--json]           the gates (devtools/check.py; the same as ./dev.sh check)
+  usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE); the reporters write nothing without it
+  usage registrations [--export [FILE]]   the status line and three hook registrations, as JSON; --export copies FILE
+                                 (default ~/.claude/settings.json) with them added to FILE.proposed and never writes FILE
 ```
 
+`cli.json` declares the same commands as its verbs (PLAN-routing-tree.md §14.8;
+tools/checks' `accessor` runs `usage help` and requires each verb listed).
 `tests/test_docs.py` holds this block equal to the CLI's help and to its
 dispatch table, both ways, and checks every command the plan lists exists.
 
@@ -80,8 +83,30 @@ the counterfactual that the same input writes to a good store.
 ## Registration
 
 `usage registrations` prints the status line and the three hooks as JSON, with
-absolute paths to this folder. This tool never writes a settings file; whoever
-owns the settings proposal merges it, and Jacob wires it. Then `usage init`.
+absolute paths to this folder (`usagelib/export.py`'s `registrations()`, the one
+source). `usage registrations --export [FILE]` (PLAN-usage-reporting.md §9) reads
+FILE, default `~/.claude/settings.json`, adds them, and writes a static copy
+beside it, `FILE.proposed`. **FILE itself is never written**: Jacob reviews the
+proposal, copies it over FILE, then runs `usage init`.
+
+What the export guarantees, or it writes nothing and exits 1:
+- FILE parses as one JSON object with no key given twice (a parser would keep
+  only one, so the copy would silently lose the other);
+- every key of FILE is in the copy with its value; lists only grow at the end.
+  The one rewrite: an existing foreign `statusLine.command` is chained behind
+  ours (`usage-statusline.sh '<old command>'`, which runs it and keeps its line),
+  checked exactly;
+- each registration is in the copy once. An already-registered FILE (the
+  applied proposal) exports byte-identical; a registration of the same script
+  from another location, or twice, is refused rather than guessed at;
+- `FILE.proposed`, if present, is a regular file (a link is refused).
+
+An existing proposal is left alone when identical (`unchanged`) and replaced
+otherwise (`replaced`): it is derived from FILE, and an older one would undo
+whatever changed in FILE since. On an error an earlier proposal is left as it
+was, and the message says so. The copy keeps FILE's permission bits, is
+re-indented to two spaces, and the output names keys, never values.
+`tests/test_export.py` holds each of these.
 
 ## Configuration
 

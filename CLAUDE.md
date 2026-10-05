@@ -15,8 +15,10 @@ Rules of this repo alone:
 - **The reporters fail open**: every path exits 0 and a failure writes nothing
   (`tests/test_reporters.py`, `FailsOpen`). Never let one print to stderr or exit
   non-zero: Claude Code shows the first and may block on the second.
-- **Never write a settings file.** `usage registrations` prints; the wiring is
-  Jacob's (`tests/test_settings.py`).
+- **Never write a settings file.** `usage registrations` prints;
+  `usage registrations --export [FILE]` writes only `FILE.proposed` beside it
+  (PLAN-usage-reporting.md §9), and copying it over FILE is Jacob's step
+  (`tests/test_settings.py`, `tests/test_export.py`).
 - **Thresholds move only by a reviewed commit to `usage.json`**, read only through
   `config.setting()`; `usage calibrate` proposes, never applies.
 - **Read nothing of the workspace's delegation layer and name no roster agent**

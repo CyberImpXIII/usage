@@ -1,5 +1,9 @@
 {
   "no-roster": {
     "allow_names": ["hooks", "checks"]
+  },
+  "accessor": {
+    "impl": ["usagelib/*.py"],
+    "exclude": ["usage-statusline.sh", "usage-stop.sh", "usage-failure.sh"]
   }
 }

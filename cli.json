@@ -1,0 +1,6 @@
+{
+  "store": ["~/.claude/usage/samples.tsv", "~/.claude/usage/tokens.tsv", "~/.claude/usage/hits.tsv",
+            "~/.claude/usage/limits.json", "~/.claude/usage/state/*"],
+  "cli": "usage",
+  "verbs": ["status", "burn", "project", "gate", "hits", "tokens", "calibrate", "check", "init", "registrations"]
+}
