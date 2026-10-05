@@ -2,11 +2,6 @@
 
 ## Own bugs
 
-- **An `origin` now exists, never pushed to.** Built 2026-10-05 with no remote;
-  by the §7.12 setup run (2026-10-05 11:43) `git remote -v` showed
-  `git@github.com:CyberImpXIII/usage.git`, added by someone else. unverified:
-  the GitHub repo exists -- settle: `gh repo view CyberImpXIII/usage`. Pushing
-  still waits on Jacob's yes; commits stay local.
 - **The tool is inert until phase 2.** Nothing is registered and no store exists.
   Jacob's steps: `./usage registrations --export` (writes
   `~/.claude/settings.json.proposed`, never the live file), review it, copy it
