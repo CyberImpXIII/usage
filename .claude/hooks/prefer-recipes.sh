@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# hooks: applies_to=all
+# Blocks an interactive browser call against a site that already has a working
+# recipe. PreToolUse hook on the Claude-in-Chrome tools and WebFetch; see
+# ../settings.json. Tests: bash .claude/hooks/test-prefer-recipes.sh
+#
+# THIS FILE IS INSTALLED INTO EVERY REPO'S .claude/hooks/, because a hook only
+# fires when Claude Code's project dir is the one holding it -- so a rule
+# enforced in only one folder is not enforced when a session starts in another.
+# The source is tools/hooks (source/hooks/); setup installs from it, and
+# `hooks copies` there fails when a copy differs from it in meaning or a repo
+# lacks one. Change the source, never a copy. The `# hooks:` line above is
+# where this file says it applies (tools/hooks vocab.json).
+#
+# Copies rather than symlinks: a hook whose command is missing exits non-zero,
+# which Claude Code reads as a block, so a dangling link would refuse every
+# matching call -- far worse than the duplication.
+#
+# WHY THIS IS A HOOK AND NOT A RULE: it was already a rule, in two files.
+# claudeTest/CLAUDE.md opens with "Before reaching for a generic approach
+# (interactive browser tools, one-off scripts, manual steps), check whether a
+# tool in this folder already does the job", and site-scrapers/CLAUDE.md rule 1
+# is "Check before assuming: node query.js site <target>". The whole README
+# section "Why this saves tokens" measures the gap: a known site is one Bash
+# call returning one JSON object, where the interactive path is a
+# tabs_context_mcp call, a navigate, one or more screenshots (the single most
+# expensive line item), a read_page accessibility dump that can run to tens of
+# thousands of characters, and several chunked javascript_tool extractions --
+# 8+ round trips for the same data.
+#
+# The failure mode is not ignorance, it is habit: opening a browser is the
+# obvious move, and the check that would have avoided it is one the agent has
+# to remember to make FIRST, before the expensive thing. That is exactly the
+# shape rule 4 already lost to, which is why that one became a hook too.
+#
+# It blocks rather than warns because on a `working` recipe the alternative is
+# strictly better and always available. When a browser is genuinely needed --
+# building a second recipe for the same host, confirming a wall, an attended
+# handoff -- `./dev.sh browser-ok` opens a short window. That is a conscious
+# act, which is the point; a block with no way past it would be worse than the
+# habit it corrects.
+#
+# FAILS OPEN. A hook that breaks every browser call would be far worse than the
+# problem it solves, so anything unexpected here allows the call.
+
+set -uo pipefail
+
+# Find site-scrapers by walking UP from this hook, not by assuming a depth.
+#
+# The first version used "../.." with a one-level fallback, which worked from
+# site-scrapers/ and from the tools folder and nowhere else. Installed in
+# emailTools/.claude/hooks/ it resolved to a path that does not exist, exited 0,
+# and enforced nothing -- a guard that is present, reports no error, and does
+# not run. Each tool folder is its own repo at its own depth, so the layout has
+# to be discovered.
+#
+# Identified by its package.json NAME, the one thing only site-scrapers has.
+# "dev.sh and engine.js" was not unique: scriptingTools/data-bridge has both
+# (and a query.js), so its copy of this hook resolved to data-bridge, found no
+# recipes, and allowed everything -- present, silent, enforcing nothing.
+is_ss() { [ -f "$1/dev.sh" ] && grep -qE '"name"[[:space:]]*:[[:space:]]*"site-scrapers"' "$1/package.json" 2>/dev/null; }
+find_repo() {
+  local d
+  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  while [ "$d" != "/" ] && [ -n "$d" ]; do
+    # A sibling checkout, which is how every other tool folder sees it.
+    if is_ss "$d/site-scrapers"; then printf '%s\n' "$d/site-scrapers"; return 0; fi
+    # Or we are inside it already (whatever the clone's folder is called).
+    if is_ss "$d"; then printf '%s\n' "$d"; return 0; fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+REPO="$(find_repo)" || exit 0
+[ -n "$REPO" ] || exit 0
+
+input=$(cat 2>/dev/null) || exit 0
+tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
+[ -n "$tool" ] || exit 0
+
+# Only the tools that FETCH a page. tabs_context_mcp, read_console_messages and
+# the rest carry no URL and say nothing about which site is being visited.
+case "$tool" in
+  WebFetch|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp) ;;
+  *) exit 0 ;;
+esac
+
+url=$(printf '%s' "$input" | jq -r '.tool_input.url // .tool_input.prompt // empty' 2>/dev/null) || exit 0
+[ -n "$url" ] || exit 0
+
+# Host only, lowercased, www stripped. Anything that is not an http(s) URL --
+# about:blank, a file path, a bare search term -- has no host and is allowed.
+host=$(printf '%s' "$url" | sed -nE 's#^[Hh][Tt][Tt][Pp][Ss]?://([^/?#]+).*#\1#p' | sed -E 's/^www\.//; s/:[0-9]+$//' | tr '[:upper:]' '[:lower:]')
+[ -n "$host" ] || exit 0
+
+# A deliberate, time-limited override from `./dev.sh browser-ok`.
+# SS_BROWSER_OK moves it, exactly as it moves `dev.sh browser-ok`'s write: the
+# hook test points both at a private file instead of racing over the live one.
+marker="${SS_BROWSER_OK:-$REPO/data/.browser-ok}"
+if [ -f "$marker" ]; then
+  started=$(sed -n 1p "$marker" 2>/dev/null)
+  mins=$(sed -n 2p "$marker" 2>/dev/null)
+  case "$started$mins" in
+    ''|*[!0-9]*) : ;;
+    *)
+      if [ $(( $(date +%s) - started )) -lt $(( mins * 60 )) ]; then exit 0; fi
+      ;;
+  esac
+fi
+
+known=$("$REPO/dev.sh" known "$host" 2>/dev/null) || exit 0
+[ -n "$known" ] || exit 0
+
+# Only a `working` recipe is a reason to refuse. A broken, blocked or
+# needs-review one means the browser may well be the right tool right now --
+# blocking there would strand the one path left.
+#
+# And only a recipe that actually covers THIS host. `dev.sh known` matches
+# suffixes in both directions, which is right for "what do we know about this
+# domain" but wrong for blocking: a recipe on jobs.lever.co made this refuse
+# lever.co/about, Lever's marketing site, which has nothing to do with the job
+# board. A false positive in a blocking hook is worse than a miss -- it gets the
+# hook switched off, and then it protects nothing. So: the recipe's host must be
+# the host itself, or a parent of it (a recipe on lever.co may serve
+# jobs.lever.co; the reverse does not hold).
+working=$(printf '%s' "$known" | awk -F'\t' -v h="$host" '
+  $2 != "working" { next }
+  { split($1, parts, "#"); rh = parts[1] }
+  rh == h || substr(h, length(h) - length(rh)) == "." rh { print $1 }
+')
+[ -n "$working" ] || exit 0
+
+{
+  echo "BLOCKED: site-scrapers already has a working recipe for ${host}."
+  echo
+  echo "Use it instead of a browser — one Bash call, one JSON object, no"
+  echo "screenshots and no DOM dump:"
+  echo
+  printf '%s\n' "$working" | sed 's#^#  ./scrape.sh #; s#$# '"'"'{...params}'"'"'#'
+  echo
+  echo "  node query.js site <target>     # the recipe, its params and its notes"
+  echo "  node lab.js peek <target> '{}'  # run it and show samples + null counts"
+  echo
+  echo "Check the JSON's \"success\" field, not the exit code. A success:false run"
+  echo "can still carry records when partialResults is true."
+  echo
+  echo "This is blocked rather than discouraged because it was already a rule in"
+  echo "two CLAUDE.md files, and the interactive path costs 8+ round trips for"
+  echo "data one call returns."
+  echo
+  echo "If you genuinely need the browser here — building another recipe for this"
+  echo "host, confirming a wall, an attended handoff — open a window first:"
+  echo
+  echo "  ./dev.sh browser-ok        # 15 minutes, or pass minutes"
+} >&2
+exit 2

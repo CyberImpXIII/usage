@@ -1,0 +1,5 @@
+# Baseline from the setup tool: its settings proposal, local env files, backups. Add your own lines anywhere; setup only appends what is missing.
+.claude/settings.proposed.json
+.env
+*.env
+*.bak
