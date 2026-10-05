@@ -47,6 +47,16 @@
   rather than a third copy of mutate.py here.
 - **`--json` for `status` and `gate`** is not built; the hub (phase 4) decides
   whether it wants text or JSON. Hinges on: the hub plan's item 11.
+- **Rule in one place: should `scan()` call tools/transcripts' reader instead
+  of copying it? (open, raised 2026-10-05).** Against: scan is incremental
+  (byte offset + per-id `seen`, emitting deltas so a later Stop adds only what
+  grew), runs inside a fail-open hook under the store lock, and splits
+  turn/backlog; tokens.jq reads a whole transcript and keeps no state. Calling
+  it would need a sibling-repo path from a hook (the fixed-path seam CLAUDE.md
+  records as a failure) and re-reading the whole file each Stop. For: one
+  rule, no drift. Leaning: keep the copy, gate it -- the cross-check reported
+  below, or a test here that runs tokens.jq on the fixture when transcripts is
+  present (UNCHECKED when absent). Hinges on: Jacob and the transcripts owner.
 - **Per-model weighting** is not applied: a token of any model counts the same
   toward %/token. Revisit if calibrate shows the ratio swinging with the model
   mix.
@@ -77,12 +87,24 @@
   wired): the window rises for tokens this ledger never saw. The gate errs
   toward holding, which is the safe side. Probe: `usage calibrate` after a
   week (phase 3).
-- **This scan is a second copy of the transcript reader's dedupe rule** (count
-  each message once, at the max of each usage field across its streamed lines,
-  id or uuid, skip `<synthetic>`). The fixture's totals were recorded once from
-  that reader by hand (tests/fixtures/transcript/expected.json, 2026-10-05:
-  in 18, out 755, cache read 82000, cache write 6850, 5 messages); a change
-  there would not fail here. Settle: the cross-check reported below.
+- **The second copy of the dedupe rule: SAME rule, checked 2026-10-05 (no
+  longer a suspicion; the drift risk stays, see the open decision).**
+  `reporters.scan()` and tools/transcripts/lib/tokens.jq both count each
+  message once, keyed `message.id` else `uuid`, at the max of each field,
+  model starting `claude`. Run: a scratch script calling `scan(f, {}, 0)` and
+  `tokens.jq --arg by model` on each file, summing scan's bases per model.
+  Session 5e711721 (main + 4 subagent transcripts): all 5 identical per model,
+  e.g. main opus-5 in 110 out 56426 cr 4588794 cw 105595, haiku in 161 out
+  8543 cr 1447259 cw 96534. Every finished transcript in the project (44):
+  0 differ; summing every line without dedupe differs in all 44, so the
+  comparison discriminates. The fixture still gives expected.json's totals.
+  Differences by reading only, never seen in data: `message.id == ""` (jq
+  groups all of those under "", scan falls back to uuid); a float or string
+  token count (scan's `int()` truncates or throws, failing open; jq keeps it);
+  a model change within one id (jq takes the first line's, scan each line's).
+  expected.json's comment names `<workspace>/.claude/lib/tokens.jq`; the
+  reader is now at tools/transcripts/lib/tokens.jq (unverified: the old path is
+  gone -- settle: `ls .claude/lib/tokens.jq` from the workspace root).
 
 ## Reported to other owners
 
@@ -90,6 +112,8 @@
   transcript reader (`tokens.jq`) on `tools/usage/tests/fixtures/transcript/`
   (turn1-3 concatenated) and compares with `expected.json`'s `by_model`, so the
   two copies of the dedupe rule cannot drift. This tool may not read that layer.
+  The reader now lives in tools/transcripts (2026-10-05), so the request goes
+  to that owner; still not built as far as this repo knows.
 - **Same owner and setup's owner, 2026-10-05:** `CHECKS_ROSTER_NAMES` for this
   repo's check, so no-roster's names half runs here instead of reporting
   UNCHECKED. (The registrations question is settled: §9, `--export`.)
