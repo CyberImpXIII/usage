@@ -1,12 +1,26 @@
 # usage
 
-What this repo is for: not written yet. Its owner fills this in, outside the
-shared block below.
+Rate-limit reporting: three fail-open reporters (status line, Stop/SubagentStop,
+StopFailure) write a store in `~/.claude/usage/`, and the `usage` CLI answers
+from it, chiefly `usage gate <tokens>`: does a job fit before the window
+resets? Built from PLAN-usage-reporting.md phase 1. `README.md` has the design.
 
 | doing this | use |
 |---|---|
-| before committing | `./dev.sh check` (a stub that fails until the owner fills in the contract) |
+| before committing | `./dev.sh check` (test, files, hooks, shared; `--json` for the one schema) |
+| what the CLI does | `./usage --help` (README.md holds the same block, tested) |
 | what is open | `TODO.md` |
+
+Rules of this repo alone:
+- **The reporters fail open**: every path exits 0 and a failure writes nothing
+  (`tests/test_reporters.py`, `FailsOpen`). Never let one print to stderr or exit
+  non-zero: Claude Code shows the first and may block on the second.
+- **Never write a settings file.** `usage registrations` prints; the wiring is
+  Jacob's (`tests/test_settings.py`).
+- **Thresholds move only by a reviewed commit to `usage.json`**, read only through
+  `config.setting()`; `usage calibrate` proposes, never applies.
+- **Read nothing of the workspace's delegation layer and name no roster agent**
+  (the shared `no-roster` check, run by the `shared` gate).
 
 <!-- shared:rules@7867132c3871 -->
 ## Shared rules

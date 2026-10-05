@@ -1,0 +1,9 @@
+{
+  "_comment": "Thresholds and knobs for tools/usage. warn/hold/sample_stale_minutes were approved by Jacob on 2026-10-05 (PLAN-usage-reporting.md §8); they move only from evidence: `usage calibrate` prints a proposal, and a change here is a commit a person reads. Every key is read by usagelib through config.setting(), and tests/test_config.py fails if a key is unread or a read key is missing.",
+  "warn": 75,
+  "hold": 90,
+  "sample_stale_minutes": 15,
+  "burn_samples": 12,
+  "sample_heartbeat_minutes": 10,
+  "calibrate_margin": 5
+}

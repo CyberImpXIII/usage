@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""usage: the tools/usage CLI (usagelib/cli.py). `usage --help` lists the commands."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from usagelib import cli  # noqa: E402
+
+sys.exit(cli.main(sys.argv[1:]))
