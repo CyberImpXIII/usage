@@ -54,9 +54,11 @@
   turn/backlog; tokens.jq reads a whole transcript and keeps no state. Calling
   it would need a sibling-repo path from a hook (the fixed-path seam CLAUDE.md
   records as a failure) and re-reading the whole file each Stop. For: one
-  rule, no drift. Leaning: keep the copy, gate it -- the cross-check reported
-  below, or a test here that runs tokens.jq on the fixture when transcripts is
-  present (UNCHECKED when absent). Hinges on: Jacob and the transcripts owner.
+  rule, no drift. Leaning: keep the copy, gated -- tools/transcripts'
+  `tests/test_cli.py UsageSeam` runs tokens.jq on this repo's fixture and
+  compares with expected.json (ran 2026-10-06 from tools/transcripts: 1 test,
+  OK, not skipped). It gates the fixture only, not scan() on live transcripts.
+  Hinges on: Jacob and the transcripts owner.
 - **Per-model weighting** is not applied: a token of any model counts the same
   toward %/token. Revisit if calibrate shows the ratio swinging with the model
   mix.
@@ -102,19 +104,12 @@
   groups all of those under "", scan falls back to uuid); a float or string
   token count (scan's `int()` truncates or throws, failing open; jq keeps it);
   a model change within one id (jq takes the first line's, scan each line's).
-  expected.json's comment names `<workspace>/.claude/lib/tokens.jq`; the
-  reader is now at tools/transcripts/lib/tokens.jq (unverified: the old path is
-  gone -- settle: `ls .claude/lib/tokens.jq` from the workspace root).
+  expected.json's comment now points at tools/transcripts/lib/tokens.jq
+  (2026-10-06).
 
 ## Reported to other owners
 
-- **The `.claude/` layer's owner, 2026-10-05:** add a test there that runs its
-  transcript reader (`tokens.jq`) on `tools/usage/tests/fixtures/transcript/`
-  (turn1-3 concatenated) and compares with `expected.json`'s `by_model`, so the
-  two copies of the dedupe rule cannot drift. This tool may not read that layer.
-  The reader now lives in tools/transcripts (2026-10-05), so the request goes
-  to that owner; still not built as far as this repo knows.
-- **Same owner and setup's owner, 2026-10-05:** `CHECKS_ROSTER_NAMES` for this
+- **The `.claude/` layer's owner and setup's owner, 2026-10-05:** `CHECKS_ROSTER_NAMES` for this
   repo's check, so no-roster's names half runs here instead of reporting
   UNCHECKED. (The registrations question is settled: §9, `--export`.)
 - **tools/checks' owner, 2026-10-05 (via the dispatcher):** (1) `cli.schema.json`
