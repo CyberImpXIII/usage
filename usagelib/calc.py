@@ -173,14 +173,22 @@ def gate(tokens):
 
 
 def hits(since=None):
-    """[{time, session, agent_type, pct, age_min, flag}] -- flag: below-hold,
-    stale-sample, no-sample or ''. pct is the larger of the two windows."""
+    """[{time, t, session, agent_type, pct, five_hour_pct, seven_day_pct,
+    sample_time, age_min, flag, window, resets_at}] -- flag: below-hold,
+    stale-sample, no-sample or ''. pct is the larger of the two windows.
+
+    window/resets_at: the window that was hit and when it resets, from the
+    sample recorded with the hit. Given only when that sample is fresh and
+    exactly one window is at or past `hold` and its reset is after the hit;
+    otherwise both are None (two windows high, or neither: which one stopped
+    the session is not known, and a guessed reset is a wrong answer)."""
     hold, stale = config.setting("hold"), config.setting("sample_stale_minutes")
     out = []
     for r in store.read("hits.tsv"):
         if since and r["time"][:10] < since:
             continue
-        ps = [x for x in (_f(r["five_hour_pct"]), _f(r["seven_day_pct"])) if x is not None]
+        by = {w: (_f(r[f"{k}_pct"]), _f(r[f"{k}_resets_at"])) for w, k in WINDOW_KEYS.items()}
+        ps = [p for p, _ in by.values() if p is not None]
         t, st = store.epoch(r["time"]), store.epoch(r["sample_time"])
         pct = max(ps) if ps else None
         age = (t - st) / 60 if t is not None and st is not None else None
@@ -192,8 +200,16 @@ def hits(since=None):
             flag = "below-hold"
         else:
             flag = ""
-        out.append({"time": r["time"], "session": r["session"], "agent_type": r["agent_type"],
-                     "pct": pct, "age_min": age, "flag": flag})
+        window = resets = None
+        at_hold = [w for w, (p, _) in by.items() if p is not None and p >= hold]
+        if flag == "" and len(at_hold) == 1:
+            r_at = by[at_hold[0]][1]
+            if r_at is not None and t is not None and r_at > t:
+                window, resets = at_hold[0], int(r_at)
+        out.append({"time": r["time"], "t": int(t) if t is not None else None, "session": r["session"],
+                    "agent_type": r["agent_type"], "pct": pct, "five_hour_pct": by["5h"][0],
+                    "seven_day_pct": by["7d"][0], "sample_time": r["sample_time"] or None,
+                    "age_min": age, "flag": flag, "window": window, "resets_at": resets})
     return out
 
 

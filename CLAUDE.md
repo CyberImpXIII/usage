@@ -7,14 +7,19 @@ resets? Built from PLAN-usage-reporting.md phase 1. `README.md` has the design.
 
 | doing this | use |
 |---|---|
-| before committing | `./dev.sh check` (test, files, hooks, shared; `--json` for the one schema) |
+| before committing | `./dev.sh check` (test, files, hooks, guard, shared; `--json` for the one schema) |
 | what the CLI does | `./usage --help` (README.md holds the same block, tested) |
 | what is open | `TODO.md` |
 
 Rules of this repo alone:
-- **The reporters fail open**: every path exits 0 and a failure writes nothing
-  (`tests/test_reporters.py`, `FailsOpen`). Never let one print to stderr or exit
-  non-zero: Claude Code shows the first and may block on the second.
+- **The reporters fail open, and leave a trace**: every path exits 0 and a
+  failure writes no ledger row (`tests/test_reporters.py`, `FailsOpen`). Never
+  let one print to stderr or exit non-zero: Claude Code shows the first and may
+  block on the second. But never swallow a failure either: it goes through
+  `store.record_failure()` into `failures.tsv` (`FailureTrace`; `usage failures`).
+- **The store is gated by the cli.json `usage init` writes into it** (the store
+  hook reads that one, not this repo's): a file the reporters write is named in
+  `store.STORE_FILES` (`tests/test_gated.py`).
 - **Never write a settings file.** `usage registrations` prints;
   `usage registrations --export [FILE]` writes only `FILE.proposed` beside it
   (PLAN-usage-reporting.md §9), and copying it over FILE is Jacob's step

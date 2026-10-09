@@ -37,6 +37,8 @@ class DataRepo(Case):
                     now="2026-10-05T10:01:00Z")
         self.script("failure", {"hook_event_name": "StopFailure", "error": "rate_limit", "session_id": SESSION,
                                 "agent_type": "general-purpose"}, now="2026-10-05T10:02:00Z")
+        self.script("failure", "{cut", now="2026-10-05T10:03:00Z")  # failures.tsv
+        self.cli("init")  # cli.json
 
     def verify(self, *extra, data=None):
         r = self.cli("verify", "--json", *extra, data=self.data if data is None else data)
@@ -49,7 +51,8 @@ class DataRepo(Case):
 
     def test_classes_are_what_the_store_holds_both_ways(self):
         from usagelib import datarepo, store
-        self.assertEqual(set(datarepo.CLASSES), set(store.COLUMNS) | {store.LIMITS, "state/", ".lock"})
+        self.assertEqual(set(datarepo.CLASSES), set(store.COLUMNS) | {store.LIMITS, "state/", ".lock",
+                                                                 store.FAILURES, store.CONTRACT})
         self.fill()
         held = {p.name + ("/" if p.is_dir() else "") for p in self.store.iterdir()}
         self.assertEqual(held, set(datarepo.CLASSES), "a store file the contract does not classify, or a class "

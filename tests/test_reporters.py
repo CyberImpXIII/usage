@@ -135,8 +135,9 @@ class FailureFilter(Case):
 
 
 class FailsOpen(Case):
-    """Truncated JSON, no store folder, a read-only store: exit 0, nothing written,
-    for all three scripts."""
+    """Truncated JSON, no store folder, a read-only store: exit 0, nothing on
+    stderr, no ledger row, for all three scripts. What each one leaves instead
+    is FailureTrace's."""
 
     def inputs(self):
         transcript = self.tmp / "t.jsonl"
@@ -145,18 +146,21 @@ class FailsOpen(Case):
                 "stop": {"session_id": "s", "hook_event_name": "Stop", "transcript_path": str(transcript)},
                 "failure": {"session_id": "s", "hook_event_name": "StopFailure", "error": "rate_limit"}}
 
+    def ledgers(self):
+        return [n for n in self.store_listing() if n not in ("failures.tsv",)]
+
     def test_truncated_json(self):
         for name, data in self.inputs().items():
             text = json.dumps(data)
             r = self.script(name, text[: len(text) // 2], now="2026-10-05T10:00:30Z")
             self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), name)
-        self.assertEqual(self.store_listing(), [])
+        self.assertEqual(self.ledgers(), [])
 
     def test_empty_input(self):
         for name in self.inputs():
             r = self.script(name, "")
-            self.assertEqual((r.returncode, r.stdout), (0, ""), name)
-        self.assertEqual(self.store_listing(), [])
+            self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""), name)
+        self.assertEqual(self.ledgers(), [])
 
     def test_no_store_folder(self):
         self.store.rmdir()
@@ -180,3 +184,109 @@ class FailsOpen(Case):
             self.script(name, data, now="2026-10-05T10:00:30Z")
         for f in ("samples.tsv", "tokens.tsv", "hits.tsv"):
             self.assertTrue((self.store / f).exists(), f)
+
+
+class FailureTrace(Case):
+    """A failed write is recorded, never swallowed (PLAN-architecture-review.md
+    §4 V1 / W20), and still fails open. Each case has its counterfactual: a
+    good write leaves no trace anywhere."""
+
+    inputs = FailsOpen.inputs
+
+    def trace(self, where=None):
+        p = where or self.store / "failures.tsv"
+        if not p.exists():
+            return []
+        lines = p.read_text().splitlines()
+        self.assertEqual(lines[0], "time\treporter\tevent\terror")
+        return [dict(zip(lines[0].split("\t"), ln.split("\t"))) for ln in lines[1:]]
+
+    def fallback(self):
+        return self.tmp / "store-failures.tsv"
+
+    def test_a_good_write_leaves_no_trace(self):
+        for name, data in self.inputs().items():
+            r = self.script(name, data, now="2026-10-05T10:00:30Z")
+            self.assertNotIn("not recorded", r.stdout, name)
+        self.assertEqual((self.trace(), self.fallback().exists()), ([], False))
+        self.assertIn("no write failures recorded", self.cli("failures").stdout)
+
+    def test_a_failed_hit_append_is_recorded_and_still_exits_0(self):
+        (self.store / "hits.tsv").mkdir()  # the append fails: a folder where the ledger goes
+        r = self.script("failure", self.inputs()["failure"], now="2026-10-05T10:00:30Z")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        t = self.trace()
+        self.assertEqual([(x["reporter"], x["event"]) for x in t], [("failure", "StopFailure")])
+        self.assertTrue(t[0]["error"].startswith("IsADirectoryError"), t[0])
+        self.assertEqual(t[0]["time"], "2026-10-05T10:00:30Z")
+        out = self.cli("failures").stdout
+        self.assertIn("failure     StopFailure", out)
+        self.assertIn("1 failure(s)", out)
+        self.assertIn("write failures: 1 recorded, latest 2026-10-05T10:00:30Z (failure)", self.cli("status").stdout)
+        doc = json.loads(self.cli("failures", "--json").stdout)
+        self.assertEqual([(d["reporter"], d["where"]) for d in doc], [("failure", str(self.store / "failures.tsv"))])
+
+    def test_a_failed_token_append_and_sample_are_recorded(self):
+        (self.store / "tokens.tsv").mkdir()
+        (self.store / "samples.tsv").mkdir()
+        inputs = self.inputs()
+        self.assertEqual(self.script("stop", inputs["stop"], now="2026-10-05T10:00:30Z").returncode, 0)
+        r = self.script("statusline", inputs["statusline"], now="2026-10-05T10:00:40Z")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertTrue(r.stdout.startswith("5h 42% (resets 14:05)"), r.stdout)
+        self.assertTrue(r.stdout.rstrip("\n").endswith(" | usage: not recorded"), r.stdout)
+        self.assertEqual([x["reporter"] for x in self.trace()], ["stop", "statusline"])
+
+    def test_cut_input_is_recorded_with_the_reporter(self):
+        for name, data in self.inputs().items():
+            text = json.dumps(data)
+            self.script(name, text[: len(text) // 2], now="2026-10-05T10:00:30Z")
+        t = self.trace()
+        self.assertEqual([x["reporter"] for x in t], ["statusline", "stop", "failure"])
+        self.assertTrue(all("input is not JSON" in x["error"] for x in t), t)
+
+    def test_a_read_only_store_records_beside_it(self):
+        self.store.chmod(0o555)
+        for name, data in self.inputs().items():
+            r = self.script(name, data, now="2026-10-05T10:00:30Z")
+            self.assertEqual((r.returncode, r.stderr), (0, ""), name)
+        self.assertEqual(self.store_listing(), [])
+        t = self.trace(self.fallback())
+        self.assertEqual([x["reporter"] for x in t], ["statusline", "stop", "failure"])
+        self.assertTrue(all(x["error"].startswith("PermissionError") for x in t), t)
+        self.assertIn(str(self.fallback()), self.cli("failures").stdout)
+
+    def test_nowhere_to_record_still_fails_open(self):
+        inputs = self.inputs()
+        self.store.chmod(0o555)
+        self.tmp.chmod(0o555)
+        for name, data in inputs.items():
+            r = self.script(name, data, now="2026-10-05T10:00:30Z")
+            self.assertEqual((r.returncode, r.stderr), (0, ""), name)
+        self.tmp.chmod(0o755)
+        self.assertFalse(self.fallback().exists())
+
+    def test_no_store_folder_is_not_a_failure(self):
+        self.store.rmdir()
+        for name, data in self.inputs().items():
+            self.script(name, data, now="2026-10-05T10:00:30Z")
+        self.assertFalse(self.fallback().exists(), "not set up is not a lost row")
+
+    def test_a_ledger_with_another_header_is_not_appended_to(self):
+        old = "time\tsession\tagent_type\tfive_hour_pct\tseven_day_pct\tsample_time\n"
+        (self.store / "hits.tsv").write_text(old)
+        r = self.script("failure", self.inputs()["failure"], now="2026-10-05T10:00:30Z")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual((self.store / "hits.tsv").read_text(), old, "a row under the wrong header")
+        self.assertTrue(self.trace()[0]["error"].startswith("HeaderMismatch: hits.tsv"), self.trace())
+
+    def test_the_trace_is_capped(self):
+        from usagelib import store
+        p = self.store / "failures.tsv"
+        p.write_text("time\treporter\tevent\terror\n" + "x" * store.FAILURES_MAX_BYTES)
+        size = p.stat().st_size
+        self.script("failure", "{cut", now="2026-10-05T10:00:30Z")
+        self.assertEqual(p.stat().st_size, size)
+        p.write_text("")  # counterfactual: under the cap, the same input is recorded
+        self.script("failure", "{cut", now="2026-10-05T10:00:30Z")
+        self.assertEqual(len(self.trace()), 1)

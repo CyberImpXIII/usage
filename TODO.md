@@ -17,15 +17,44 @@
   map inside). Nothing prunes it. Harmless at our volume; a `usage prune` is the
   fix if it ever matters.
 
+- **The store is gated only once setup installs the store hook here (V2).**
+  `usage init` writes `<store>/cli.json` (V1, 2026-10-09), but
+  `.claude/hooks/store-guard.sh` is not installed in this repo, so the `guard`
+  gate reports UNCHECKED. Run 2026-10-09 with
+  `USAGE_STORE_GUARD=../hooks/source/hooks/store-guard.sh ./dev.sh check guard`:
+  OK, 2 of 2 ran (Write refused with exit 2 after init, 0 before; `echo >>`
+  likewise). Live, nothing is gated yet: on 2026-10-09 `~/.claude/usage` does
+  not exist (phase 2), and store-guard.sh is neither in the workspace's
+  `.claude/hooks/` nor named in its or `~/.claude/settings.json`. So V1's
+  verdict is **partial**, not followed: the code side holds by a run, the live
+  side waits on Jacob's `./usage init` and setup's V2.
+- **hits.tsv gained two columns (2026-10-09)**: `five_hour_resets_at`,
+  `seven_day_resets_at`, for `hits --json`'s `resets_at`. An existing hits.tsv
+  with the old 6-column header is now refused (HeaderMismatch, recorded in
+  failures.tsv), never appended to under the wrong header. No store exists yet
+  (phase 2), so nothing migrates; if one does, rename the old file aside. The
+  export format went 1 -> 2, so an old export is refused by import/verify.
+- **Not traced**: the interpreter failing to start (`python3` missing: the .sh
+  wrapper exits 0 with nothing written) and both trace places refusing
+  (store and its parent read-only). Each still fails open (`FailureTrace`).
+  `failures.tsv` stops at 256 KiB; nothing rotates it.
+
 ## Open decisions
 
+- **`hits --json`'s `resets_at` is strict (2026-10-09)**: given only when the
+  hit's sample is fresh, exactly one window is at or past `hold` and its reset
+  is after the hit; else null (both high, neither, stale, no reset). A refinement
+  (e.g. the window nearer 100%, or the StopFailure error text if it ever names
+  the window) waits on real hits. Hinges on: the first `usage hits` after phase 2.
 - **`cli.json` vs two tools/checks rules (open, reported 2026-10-05).** §9 wants
   the verbs declared in `cli.json`; the store is outside the repo
   (`~/.claude/usage/`), which `schema/cli.schema.json` cannot express
   (paths-inside). Declared as `~/.claude/usage/<ledger>`: checks' `inside()`
   accepts a `~`-path as repo-relative, so accessor passes and its part-3 audit
   (no file outside usagelib/ names a ledger) really runs. If checks starts
-  rejecting `~`, accessor goes red here, which is the right signal.
+  rejecting `~`, accessor goes red here, which is the right signal. Still open
+  2026-10-09 (V1): it did not block; the store's own cli.json (absolute) is
+  what the store hook reads.
 - **Settled 2026-10-05: the ledgers ARE exported** (`usage export|import|verify`,
   usagelib/datarepo.py). samples/tokens/hits are history nothing can regenerate
   (calibrate's evidence, the %/token fallback; transcripts get pruned);
@@ -109,6 +138,17 @@
 
 ## Reported to other owners
 
+- **harness, 2026-10-09 (via the dispatcher): `usage hits --json` has landed**
+  (the ask in .claude/TODO.md). `tests/test_questions.py HitsJson
+  test_the_consumer_reads_it` runs `.claude/lib/usage-hits.sh` against this
+  CLI: OK. No store is exit 1, never `[]`.
+- **setup / hooks, 2026-10-09 (via the dispatcher): `shared:hooks-installed`
+  FAILS here** on `.claude/hooks/` and `.claude/lib/` copies this repo did not
+  change: store-guard.sh, test-store-guard.sh, lib/extra-stores.sh missing;
+  no-inline-blobs, prefer-recipes, test-write-ledger, lib/ledger.sh,
+  lib/write-targets.sh drifted. Expected: setup re-run installs them (V2).
+- **dispatcher, 2026-10-09:** the V1 brief said "no origin yet, so no push";
+  origin exists (github.com/CyberImpXIII/usage) and the commit was pushed.
 - **The `.claude/` layer's owner and setup's owner, 2026-10-05:** `CHECKS_ROSTER_NAMES` for this
   repo's check, so no-roster's names half runs here instead of reporting
   UNCHECKED. (The registrations question is settled: §9, `--export`.)

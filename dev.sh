@@ -9,7 +9,7 @@ usage() {
   cat <<'EOF'
 ./dev.sh <command>
 
-  check [--json] [GATE...]   every gate (test, files, hooks, shared), or the ones named; run before committing
+  check [--json] [GATE...]   every gate (test, files, hooks, guard, shared), or the ones named; run before committing
 EOF
 }
 

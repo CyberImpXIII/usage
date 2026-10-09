@@ -1,6 +1,8 @@
 """§4 gates for the questions: project and gate on samples with a known slope,
 hits calibrate, and the token ledger's grouping."""
-from tests.helpers import Case
+import json
+
+from tests.helpers import Case, epoch
 
 R5 = "2026-10-05T15:00:00Z"
 R7 = "2026-10-12T09:00:00Z"
@@ -91,10 +93,14 @@ class KnownSlope(Case):
 
 
 class HitsCalibrate(Case):
-    def put_hits(self, rows):
-        lines = ["time\tsession\tagent_type\tfive_hour_pct\tseven_day_pct\tsample_time"]
-        for t, p5, p7, st in rows:
-            lines.append("\t".join([t, "sess-1", "a", str(p5), str(p7), st]))
+    def put_hits(self, rows, session="sess-1"):
+        """rows: (time, 5h pct, 7d pct, sample time[, 5h resets iso|None, 7d resets iso|None])"""
+        from usagelib import store
+        lines = ["\t".join(store.COLUMNS["hits.tsv"])]
+        for t, p5, p7, st, *rs in rows:
+            r5, r7 = (rs + [R5, R7])[:2] if rs else (R5, R7)
+            lines.append("\t".join([t, session, "a", str(p5), str(p7), st,
+                                    str(int(epoch(r5))) if r5 else "", str(int(epoch(r7))) if r7 else ""]))
         (self.store / "hits.tsv").write_text("\n".join(lines) + "\n")
 
     def test_a_hit_below_hold_is_flagged_and_calibrate_proposes_a_lower_hold(self):
@@ -124,6 +130,74 @@ class HitsCalibrate(Case):
         self.put_hits([("2026-10-05T10:05:00Z", 60, 30, "2026-10-05T10:00:00Z")])
         self.cli("calibrate")
         self.assertEqual((ROOT / "usage.json").read_bytes(), before)
+
+
+class HitsJson(Case):
+    """`usage hits --json`, as .claude/lib/usage-hits.sh reads it: one JSON
+    array of {"t": epoch, "session": full id, "resets_at": epoch|null, ...}."""
+    SESSION = "0b1d2c3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e"
+    put_hits = HitsCalibrate.put_hits
+
+    def hits(self, *args):
+        r = self.cli("hits", "--json", *args)
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(r.stdout.count("\n"), 1, "one line")
+        return json.loads(r.stdout)
+
+    def test_shape(self):
+        self.put_hits([("2026-10-05T10:05:00Z", 95, 30, "2026-10-05T10:00:00Z")], session=self.SESSION)
+        (h,) = self.hits()
+        self.assertEqual((h["t"], h["session"]), (int(epoch("2026-10-05T10:05:00Z")), self.SESSION))
+        self.assertIs(type(h["t"]), int)
+        self.assertEqual((h["window"], h["resets_at"]), ("5h", int(epoch(R5))))
+        self.assertEqual(h["flag"], "")
+
+    def test_the_reset_is_the_window_at_hold(self):
+        """Counterfactual for test_shape: move the high value to 7d and the reset follows it."""
+        self.put_hits([("2026-10-05T10:05:00Z", 30, 95, "2026-10-05T10:00:00Z")])
+        (h,) = self.hits()
+        self.assertEqual((h["window"], h["resets_at"]), ("7d", int(epoch(R7))))
+
+    def test_resets_at_is_null_when_not_known(self):
+        self.put_hits([("2026-10-05T10:05:00Z", 95, 95, "2026-10-05T10:00:00Z"),   # both at hold
+                       ("2026-10-05T10:06:00Z", 60, 30, "2026-10-05T10:00:00Z"),   # neither
+                       ("2026-10-05T12:00:00Z", 95, 30, "2026-10-05T10:00:00Z"),   # stale sample
+                       ("2026-10-05T10:07:00Z", 95, 30, "2026-10-05T10:00:00Z", None, R7),  # no 5h reset
+                       ("2026-10-05T16:00:00Z", 95, 30, "2026-10-05T15:55:00Z")])  # reset already past
+        hs = self.hits()
+        self.assertEqual(len(hs), 5)
+        self.assertEqual([(h["window"], h["resets_at"]) for h in hs], [(None, None)] * 5)
+        self.assertEqual([h["flag"] for h in hs], ["", "below-hold", "stale-sample", "", ""])
+
+    def test_since(self):
+        self.put_hits([("2026-10-04T10:05:00Z", 95, 30, "2026-10-04T10:00:00Z"),
+                       ("2026-10-05T10:05:00Z", 95, 30, "2026-10-05T10:00:00Z")])
+        self.assertEqual(len(self.hits()), 2)
+        self.assertEqual([h["time"] for h in self.hits("--since", "2026-10-05")], ["2026-10-05T10:05:00Z"])
+        self.assertEqual(self.hits("--since", "2026-10-06"), [])
+
+    def test_no_store_is_not_an_empty_list(self):
+        self.store.rmdir()
+        r = self.cli("hits", "--json")
+        self.assertEqual((r.returncode, r.stdout), (1, ""))
+        self.assertIn("no store", r.stderr)
+
+    def test_the_consumer_reads_it(self):
+        """The workspace's reader, when present, against this CLI."""
+        import shutil
+        import subprocess
+        from tests.helpers import ROOT
+        lib = ROOT.parent.parent / ".claude" / "lib" / "usage-hits.sh"
+        if not lib.is_file() or not shutil.which("jq"):
+            self.skipTest(f"no {lib} or no jq")
+        self.put_hits([("2026-10-05T10:05:00Z", 95, 30, "2026-10-05T10:00:00Z"),
+                       ("2026-10-05T10:06:00Z", 95, 95, "2026-10-05T10:00:00Z")], session=self.SESSION)
+        r = subprocess.run(["bash", str(lib), str(self.tmp)], capture_output=True, text=True, timeout=60,
+                           env=dict(self.env(), USAGE_CLI=str(ROOT / "usage")))
+        self.assertEqual((r.returncode, r.stderr), (0, ""), r.stdout)
+        self.assertEqual(json.loads(r.stdout), [
+            {"t": int(epoch("2026-10-05T10:05:00Z")), "session": self.SESSION, "resets_at": int(epoch(R5))},
+            {"t": int(epoch("2026-10-05T10:06:00Z")), "session": self.SESSION, "resets_at": None}])
 
 
 class Tokens(Case):

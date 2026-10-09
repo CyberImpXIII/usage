@@ -23,11 +23,14 @@ HELP = """\
   usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
   usage gate <tokens>            exit 0 if <tokens> fit before the window's reset under the burn so far;
                                  exit 1 with "hold until <time>" otherwise. The hub's question.
-  usage hits [--since D]         rate-limit hits with the sample that preceded each; flags one below the hold threshold
+  usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
+                                 --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
+  usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
   usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
   usage calibrate                proposes thresholds from the hits so far; never applies them
   usage check [--json]           the gates (devtools/check.py; the same as ./dev.sh check)
-  usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE); the reporters write nothing without it
+  usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE) and its cli.json (the store hook's
+                                 gate: a hand write to a ledger is refused); the reporters write nothing without the folder
   usage registrations [--export [FILE]]   the status line and three hook registrations, as JSON; --export copies FILE
                                  (default ~/.claude/settings.json) with them added to FILE.proposed and never writes FILE
   usage export [--json]          write the ledgers (samples, tokens, hits; never limits.json or state/) into $DATA_REPO/usage/
@@ -70,6 +73,7 @@ def cmd_status(args):
     sample, at = calc.latest()
     if sample is None:
         print("no sample yet: the status line has not run with rate_limits (or the store is missing: usage init)")
+        _store_notes()
         return 1
     age = (config.now() - at) / 60 if at is not None else None
     stale = config.setting("sample_stale_minutes")
@@ -84,7 +88,20 @@ def cmd_status(args):
         print("sampled: unknown time")
     else:
         print(f"sampled {age:.0f} min ago" + (f" -- STALE (after {stale} min)" if age > stale else ""))
+    _store_notes()
     return 0
+
+
+def _store_notes():
+    """What `status` adds about the store itself: an ungated store, and
+    recorded write failures (rows the reporters lost)."""
+    gate = store.contract_state(CLI_PATH, COMMANDS)
+    if gate in ("missing", "differs"):
+        print(f"store gate: {store.CONTRACT} {gate} in {config.store_dir()} -- run `usage init`")
+    fails = store.read_failures()
+    if fails:
+        print(f"write failures: {len(fails)} recorded, latest {fails[-1]['time']} ({fails[-1]['reporter']}) "
+              "-- `usage failures`")
 
 
 def cmd_burn(args):
@@ -130,9 +147,22 @@ def cmd_gate(args):
     return code
 
 
+HIT_JSON = ("t", "session", "resets_at", "window", "time", "agent_type", "five_hour_pct", "seven_day_pct",
+            "sample_time", "flag")
+
+
 def cmd_hits(args):
-    o = _opts(args, ("--since",))
-    rows = calc.hits(_since(o.get("--since")))
+    as_json = "--json" in args
+    o = _opts([a for a in args if a != "--json"], ("--since",))
+    since = _since(o.get("--since"))
+    if as_json:
+        # no store is "not known", never "no hits": exit 1, nothing on stdout
+        if not config.store_dir().is_dir():
+            sys.stderr.write(f"usage hits: no store at {config.store_dir()} (usage init): hits not known\n")
+            return 1
+        print(json.dumps([{k: h[k] for k in HIT_JSON} for h in calc.hits(since)]))
+        return 0
+    rows = calc.hits(since)
     if not rows:
         print("no rate-limit hits recorded")
         return 0
@@ -173,11 +203,28 @@ def cmd_check(args):
     return subprocess.call([sys.executable, str(config.TOOL / "devtools" / "check.py"), *args])
 
 
+def cmd_failures(args):
+    as_json = _json_flag(args)
+    rows = store.read_failures()
+    if as_json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print("no write failures recorded")
+        return 0
+    for r in rows:
+        print(f"{r['time']}  {r['reporter'] or '-':10}  {r['event'] or '-':13}  {r['error']}")
+    places = sorted({r["where"] for r in rows})
+    print(f"{len(rows)} failure(s), in {', '.join(places)}")
+    return 0
+
+
 def cmd_init(args):
     _opts(args, ())
     d = config.store_dir()
     d.mkdir(parents=True, exist_ok=True)
     print(f"store: {d}")
+    print(f"gate: {d / store.CONTRACT} {store.write_contract(CLI_PATH, COMMANDS)}")
     return 0
 
 
@@ -289,10 +336,11 @@ def cmd_verify(args):
 
 COMMANDS = {
     "status": cmd_status, "burn": cmd_burn, "project": cmd_project, "gate": cmd_gate,
-    "hits": cmd_hits, "tokens": cmd_tokens, "calibrate": cmd_calibrate, "check": cmd_check,
+    "hits": cmd_hits, "failures": cmd_failures, "tokens": cmd_tokens, "calibrate": cmd_calibrate, "check": cmd_check,
     "init": cmd_init, "registrations": cmd_registrations,
     "export": cmd_export, "import": cmd_import, "verify": cmd_verify,
 }
+CLI_PATH = config.TOOL / "usage"  # absolute in the store's cli.json: the store is outside every repo
 
 
 def main(argv):

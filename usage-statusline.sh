@@ -9,6 +9,8 @@
 #                                   ours is appended to its last line after " | "
 #
 # Fails open: exit 0 always; if our part fails, the chained output still prints.
+# A sample it could not write is recorded in failures.tsv and the line ends
+# " | usage: not recorded" (usagelib/reporters.py; `usage failures`).
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
 input=$(cat 2>/dev/null)
 chained=""

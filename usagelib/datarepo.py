@@ -20,6 +20,8 @@ default.
              state/       this machine's transcript offsets, keyed by a hash of
                           a local path; meaningless on another machine
              .lock        the write lock
+             failures.tsv this machine's failed reporter writes (a local fault)
+             cli.json     the store's gate, holding this machine's tool path
 
 Each exported ledger is written exactly as the tool reads it: header, then
 every row store.scan() returns, rendered by store.render(). A row the reader
@@ -53,7 +55,7 @@ from pathlib import Path
 from . import config, store
 
 TOOL = "usage"
-FORMAT = 1
+FORMAT = 2  # 2: hits.tsv carries both windows' resets_at (2026-10-09)
 MANIFEST = "manifest.json"
 
 EXPORT = "export"
@@ -66,6 +68,8 @@ CLASSES = {
                   "sample_stale_minutes: a restored copy would be a wrong answer",
     "state/": "this machine's transcript offsets, keyed by a hash of a local path",
     ".lock": "the write lock",
+    store.FAILURES: "this machine's failed reporter writes: a local fault to fix here, not history",
+    store.CONTRACT: "the store's gate, written by `usage init` with this machine's tool path",
 }
 LEDGERS = [n for n, c in CLASSES.items() if c == EXPORT]
 

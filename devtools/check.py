@@ -5,6 +5,9 @@
   files   every script the registrations and the CLI need: present, executable,
           parses; usage.json, cli.json and checks.json parse
   hooks   the shared hook copies in .claude/hooks/ pass their own tests
+  guard   the store hook (.claude/hooks/store-guard.sh, or $USAGE_STORE_GUARD)
+          refuses a hand write to a store `usage init` gated
+          (tests/test_gated.py StoreGuard); UNCHECKED, never ok, without it
   shared  tools/checks' generic gates (`checks run . --json`), one entry each as
           shared:<name>; UNCHECKED, never ok, when that sibling is absent.
           Roster names for no-roster's second half come from the caller
@@ -113,6 +116,41 @@ def gate_hooks():
     return result("hooks", found)
 
 
+GUARD_ENV = "USAGE_STORE_GUARD"
+GUARD = ROOT / ".claude" / "hooks" / "store-guard.sh"
+
+
+def guard_hook():
+    """The store hook the `guard` gate and tests/test_gated.py run: $USAGE_STORE_GUARD,
+    else this repo's installed copy. None when neither is a file."""
+    p = Path(os.environ[GUARD_ENV]) if os.environ.get(GUARD_ENV) else GUARD
+    return p if p.is_file() else None
+
+
+def gate_guard():
+    hook = guard_hook()
+    if hook is None:
+        return result("guard", status="unchecked",
+                      reason=f"no store hook at {GUARD.relative_to(ROOT)} (setup installs it; ${GUARD_ENV} "
+                             "names another): the store's cli.json is written but no refusal was run")
+    r = subprocess.run([sys.executable, "-m", "unittest", "-v", "tests.test_gated.StoreGuard"],
+                       cwd=ROOT, capture_output=True, text=True, env=dict(os.environ, **{GUARD_ENV: str(hook)}))
+    found = [failure(f"{m.group(1)}: {m.group(2)}", "tests/test_gated.py", role="tests")
+             for m in map(UNITTEST.match, r.stderr.splitlines()) if m]
+    if r.returncode != 0 and not found:
+        found.append(failure(f"StoreGuard exit {r.returncode}: "
+                             + " / ".join(r.stderr.strip().splitlines()[-2:]), role="tests"))
+    ran = re.search(r"^Ran (\d+) tests?", r.stderr, re.M)
+    ran = int(ran.group(1)) if ran else 0
+    skipped = re.search(r"skipped=(\d+)", r.stderr)
+    skipped = int(skipped.group(1)) if skipped else 0
+    if not found and ran - skipped <= 0:
+        return result("guard", status="unchecked", reason=f"StoreGuard ran nothing with {hook}")
+    res = result("guard", found)
+    res["_note"] = f"{ran - skipped} of {ran} ran, with {hook}"
+    return res
+
+
 def gate_shared():
     if not CHECKS.is_file():
         return [result("shared", status="unchecked",
@@ -145,7 +183,7 @@ def gate_shared():
     return out
 
 
-GATES = {"test": gate_test, "files": gate_files, "hooks": gate_hooks, "shared": gate_shared}
+GATES = {"test": gate_test, "files": gate_files, "hooks": gate_hooks, "guard": gate_guard, "shared": gate_shared}
 
 
 def main(argv):

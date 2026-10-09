@@ -1,6 +1,9 @@
 """The three reporters, one function per event. Each takes the parsed hook or
 status-line input and either writes its rows or raises; hook.py turns every
-raise into "exit 0, nothing written" (fail open).
+raise into "exit 0, nothing on stderr" (fail open) and records it with
+store.record_failure(), so a lost row leaves a trace (`usage failures`). The
+status line, which prints whatever happens to the store, also says so on the
+line itself (NOT_RECORDED).
 
   statusline(data) -> the one-line status (str, may be empty)
   stop(data)       -> Stop / SubagentStop: tokens.tsv rows for the turn's delta
@@ -15,6 +18,7 @@ from . import config, store
 
 WINDOWS = (("5h", "five_hour"), ("7d", "seven_day"))
 RATE_LIMIT_ERROR = "rate_limit"
+NOT_RECORDED = " | usage: not recorded"
 
 
 # ------------------------------------------------------------- status line --
@@ -90,8 +94,11 @@ def statusline(data):
     line = status_text(sample)
     try:
         record_sample(data["rate_limits"], sample)
-    except Exception:  # the line is still printed; the store is what failed
+    except store.NoStore:  # not set up: nothing to record, nothing lost
         pass
+    except Exception as e:  # noqa: BLE001 -- the line is still printed; the store is what failed
+        store.record_failure("statusline", "", e)
+        line += NOT_RECORDED
     return line
 
 
@@ -218,4 +225,6 @@ def failure(data):
             "five_hour_pct": sample.get("five_hour_pct"),
             "seven_day_pct": sample.get("seven_day_pct"),
             "sample_time": store.iso(at) if isinstance(at, (int, float)) else None,
+            "five_hour_resets_at": sample.get("five_hour_resets_at"),
+            "seven_day_resets_at": sample.get("seven_day_resets_at"),
         }])

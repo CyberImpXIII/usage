@@ -46,7 +46,7 @@ class Docs(unittest.TestCase):
         doc = json.loads((ROOT / "cli.json").read_text())
         names = {s.rsplit("/", 1)[-1] for s in doc["store"] if s.startswith("~/.claude/usage/")}
         self.assertEqual(len(names), len(doc["store"]), "a store path outside ~/.claude/usage/")
-        self.assertEqual(names - {"*"}, set(store.COLUMNS) | {store.LIMITS})
+        self.assertEqual(names - {"*"}, set(store.COLUMNS) | {store.LIMITS, store.FAILURES})
         self.assertIn("~/.claude/usage/state/*", doc["store"])
 
     def test_each_documented_command_answers(self):
