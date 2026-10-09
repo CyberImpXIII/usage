@@ -14,6 +14,12 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$DIR/no-inline-blobs.sh"
 fails=0
+# CPU time (user + sys) of everything this shell has run and reaped, in ms, into
+# CPU. Read through a file: `times` in $( ) would report the subshell's own.
+TF=$(mktemp "${TMPDIR:-/tmp}/blobs-cpu.XXXXXX") || exit 1
+trap 'rm -f "$TF"' EXIT
+_ms() { local m=${1%%m*} r=${1#*m}; r=${r%s}; local s=${r%.*} f=${r#*.}000; echo $(( (10#$m * 60 + 10#$s) * 1000 + 10#${f:0:3} )); }
+cpu() { times > "$TF"; local l; l=$(tail -1 "$TF"); CPU=$(( $(_ms "${l%% *}") + $(_ms "${l##* }") )); }
 
 check() {
   local want="$1" desc="$2" cmd="$3"
@@ -80,8 +86,26 @@ python3 -c "print(1)"'
 # command reads a match as no match (grep exits at the match, printf takes
 # SIGPIPE, the pipeline returns 141), so a long enough command let a blob by.
 long_tail=$(for i in $(seq 1 4000); do printf 'echo filler line %s with some width to it\n' "$i"; done)
+cpu; c0=$CPU
 check 2 "blob early in a long command" "node -e \"x\"
 $long_tail"
+# And in time: judged at the end, against the short ALLOW cases timed in the
+# same run, in CPU time (see the end).
+cpu; c_long=$((CPU - c0))
+# The window's seam: the reader sees 4096 characters at a time. A word that
+# straddles its end, and a heredoc wholly past it, read as they would whole.
+pad=$(printf '%5000s' '' | tr ' ' a)
+for at in 4090 4093 4095 4096; do
+  check 2 "python3 -c across ${at}" ": ${pad:0:at-4}; python3 -c \"x\""
+done
+check 2 "heredoc to node past 4096"  ": ${pad}
+node <<EOF
+console.log(1)
+EOF"
+check 0 "data heredoc past 4096"     ": ${pad}
+cat > notes.md <<'EOF'
+node -e \"x\"
+EOF"
 check 2 "a<<b arithmetic swallows nothing" 'echo $((1<<2))
 python3 -c "print(1)"'
 # A heredoc fed to a SHELL is commands, so its body is read as commands.
@@ -95,6 +119,7 @@ EOF
 OUTER"
 
 echo "must ALLOW (exit 0):"
+cpu; c1=$CPU
 check 0 "running a script"    'node lab.js peek nodesk.co'
 check 0 "script by path"      '~/.nvm/versions/node/v22.20.0/bin/node audit.js units'
 check 0 "node --test"         'node --test test/probes.test.js'
@@ -137,6 +162,38 @@ check 0 "git"                 'git add -A && git commit -F msg.txt'
 check 0 "grep -e"             'grep -e foo file.txt'
 check 0 "sed -e"              'sed -e "s/a/b/" file.txt'
 check 0 "empty input"         ''
+cpu; c_short=$((CPU - c1))
+
+# The long case, in time. The reader once took a character at a time from the
+# whole string, which bash pays for by the string's length: the long case took
+# 171s (chronjobScheduler's copy, 2026-10-08), and every long Bash call paid
+# its share. Wall time flaked twice under load, fixed (34s against 30) and
+# then relative to the short cases (67s against 46, knowledge-base at load
+# 50-96, 2026-10-09): a burst can land on one side only. So both sides are CPU
+# time (user + sys of the hook, jq and bash), which waiting for a CPU does not
+# add to: the ~22 short ALLOW calls above against the long case. Measured at
+# load 25: windowed reader long 11.4s CPU, 20 short calls 4.6s; the old
+# reader (e9a20d3^) long 90s CPU. Limit 4 x short + 5s (~25s). Over it, the
+# long case runs once more alone and the faster of the two is judged: a
+# quadratic reader is over twice, a burst is not.
+echo "the long command, in CPU time:"
+limit=$((4 * c_short + 5000))
+if [ "$c_long" -gt "$limit" ]; then
+  first=$c_long
+  cpu; c0=$CPU
+  printf '{"tool_input":{"command":%s}}' "$(printf '%s' "node -e \"x\"
+$long_tail" | jq -Rs .)" | bash "$HOOK" >/dev/null 2>&1
+  cpu; c_long=$((CPU - c0))
+  printf '  note  %-28s first run %sms CPU, over %sms; ran once more: %sms\n' "the long command" "$first" "$limit" "$c_long"
+  [ "$first" -lt "$c_long" ] && c_long=$first
+fi
+if [ "$c_long" -le "$limit" ]; then
+  printf '  ok    %-28s (%sms CPU; limit %sms = 4 x %sms short + 5000)\n' "the long command" "$c_long" "$limit" "$c_short"
+else
+  printf '  FAIL  %-28s took %sms CPU; limit %sms = 4 x %sms short + 5000: the reader is quadratic again\n' \
+    "the long command" "$c_long" "$limit" "$c_short"
+  fails=$((fails + 1))
+fi
 
 echo
 if [ "$fails" = 0 ]; then echo "all cases passed"; else echo "$fails FAILED"; exit 1; fi
