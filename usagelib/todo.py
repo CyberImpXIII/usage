@@ -3,9 +3,10 @@
 
 The item is read through tools/todo's own CLI, `todo get ID` (one record as
 JSON: {id, closed, tags, record}), never its store files. The CLI is
-$USAGE_TODO_CLI, else the sibling ../todo/todo; it runs in $USAGE_TODO_DIR,
-else its own folder (`todo get` needs a store in the folder it runs in, and
-scans $TODO_ROOT, which passes through untouched, for the others).
+$USAGE_TODO_CLI, else the sibling ../todo/todo. It runs in the workspace root
+(WORKSPACE, two folders above this tool), where todo needs no store of its own
+and scans from that folder (tools/todo 4aee964); $USAGE_TODO_DIR overrides it,
+for the tests, and $TODO_ROOT passes through untouched.
 
 The estimate per size is data: usage.json `size_tokens`, read through
 config.setting(). A size with no entry there (L, which todo says to split) and
@@ -20,6 +21,7 @@ from pathlib import Path
 from . import config
 
 CLI_ENV, DIR_ENV = "USAGE_TODO_CLI", "USAGE_TODO_DIR"
+WORKSPACE = config.TOOL.parent.parent  # tests/test_gate_todo.py holds it to todo's scan-root rule
 TIMEOUT = 30
 
 
@@ -32,7 +34,7 @@ def get(item_id):
     cli = cli_path()
     if not (cli.is_file() and os.access(cli, os.X_OK)):
         return None, f"no todo CLI at {cli} (${CLI_ENV} names another)"
-    where = os.environ.get(DIR_ENV) or str(cli.parent)
+    where = os.environ.get(DIR_ENV) or str(WORKSPACE)
     try:
         r = subprocess.run([str(cli), "get", item_id], cwd=where, capture_output=True, text=True, timeout=TIMEOUT)
     except (OSError, subprocess.SubprocessError) as e:

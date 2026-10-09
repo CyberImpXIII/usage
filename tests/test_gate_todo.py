@@ -62,15 +62,19 @@ class RealTodo(Slope):
         super().setUp()
         if not (TODO.is_file() and os.access(TODO, os.X_OK)):
             self.skipTest(f"no todo CLI at {TODO}: the Stub cases still run")
-        self.work = self.tmp / "work"
+        self.work = self.tmp / "work"  # a repo with a store; gate runs from self.tmp, which has none
         self.work.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.work)], check=True, capture_output=True)
         self.todo("init", "--prefix", "ug", "--repo", "work")
         self.todo("add", "sized", "--kind", "note", "--size", "S")      # ug-1
         self.todo("add", "unsized", "--kind", "note")                   # ug-2
         self.todo("add", "large", "--kind", "note", "--size", "L")      # ug-3
 
     def todo_env(self):
-        return dict(self.env(), TODO_ROOT=str(self.tmp), USAGE_TODO_CLI=str(TODO), USAGE_TODO_DIR=str(self.work))
+        """No TODO_ROOT: todo finds the store from the folder it runs in, as from the workspace root."""
+        e = dict(self.env(), USAGE_TODO_CLI=str(TODO), USAGE_TODO_DIR=str(self.tmp))
+        e.pop("TODO_ROOT", None)
+        return e
 
     def todo(self, *args):
         r = subprocess.run([str(TODO), "-C", str(self.work), *args], capture_output=True, text=True,
@@ -83,6 +87,7 @@ class RealTodo(Slope):
                               env=self.todo_env(), timeout=120)
 
     def test_the_size_is_the_estimate_and_changing_it_changes_the_answer(self):
+        self.assertFalse((self.tmp / "todo.json").exists(), "the folder gate runs from holds no store")
         s = self.gate("ug-1")
         self.assert_same_as_numeric(s, "S", "ug-1")
         self.todo("edit", "ug-1", "--size", "M")
@@ -110,6 +115,19 @@ class RealTodo(Slope):
                            capture_output=True, text=True, env=self.todo_env(), timeout=60)
         self.assertNotEqual(r.returncode, 0, "todo accepts a size usage does not know")
         self.assertIn("choose from S, M, L", r.stderr)
+
+
+class Workspace(Case):
+    def test_the_default_folder_is_where_todo_scans_from(self):
+        """todo's rule for a folder with no store: it scans from there when it
+        is in no git repo. WORKSPACE must be such a folder, holding the
+        workspace's CLAUDE.md, or `gate --todo` asks the wrong place."""
+        from usagelib import todo
+        ws = todo.WORKSPACE
+        self.assertTrue((ws / "CLAUDE.md").is_file(), ws)
+        self.assertIn(ws, ROOT.parents)
+        r = subprocess.run(["git", "-C", str(ws), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0, f"{ws} is inside a git repo: {r.stdout}")
 
 
 class Stub(Slope):

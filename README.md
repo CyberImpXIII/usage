@@ -62,8 +62,9 @@ dispatch table, both ways, and checks every command the plan lists exists.
 
 **`usage gate --todo <id>`** takes the job's tokens from a todo item's `size`
 (PLAN-architecture-review.md item 7), read through tools/todo's own CLI,
-`todo get <id>`, never its files (`$USAGE_TODO_CLI`, else `../todo/todo`, run in
-`$USAGE_TODO_DIR`, else its own folder; `$TODO_ROOT` passes through). The
+`todo get <id>`, never its files (`$USAGE_TODO_CLI`, else `../todo/todo`, run from
+the workspace root, which needs no store of its own since tools/todo 4aee964;
+`$USAGE_TODO_DIR` overrides it for the tests, `$TODO_ROOT` passes through). The
 estimate per size is data, usage.json `size_tokens` (S 4,000,000, M 12,000,000:
 a first value, not yet measured). An unsized item, an L one (todo says split
 it), a closed one, a size with no entry, or a todo that cannot answer is exit 3,
