@@ -17,17 +17,15 @@
   map inside). Nothing prunes it. Harmless at our volume; a `usage prune` is the
   fix if it ever matters.
 
-- **The store is gated only once setup installs the store hook here (V2).**
-  `usage init` writes `<store>/cli.json` (V1, 2026-10-09), but
-  `.claude/hooks/store-guard.sh` is not installed in this repo, so the `guard`
-  gate reports UNCHECKED. Run 2026-10-09 with
-  `USAGE_STORE_GUARD=../hooks/source/hooks/store-guard.sh ./dev.sh check guard`:
-  OK, 2 of 2 ran (Write refused with exit 2 after init, 0 before; `echo >>`
-  likewise). Live, nothing is gated yet: on 2026-10-09 `~/.claude/usage` does
-  not exist (phase 2), and store-guard.sh is neither in the workspace's
-  `.claude/hooks/` nor named in its or `~/.claude/settings.json`. So V1's
-  verdict is **partial**, not followed: the code side holds by a run, the live
-  side waits on Jacob's `./usage init` and setup's V2.
+- **The store is gated in code, not yet live (V1 partial).** `usage init`
+  writes `<store>/cli.json` (V1, 2026-10-09). Setup installed
+  `.claude/hooks/store-guard.sh` here (5954975), and the `guard` gate ran it:
+  OK, 2 of 2 (Write refused with exit 2 after init, 0 before; `echo >>`
+  likewise). Live, on 2026-10-09: `~/.claude/usage` does not exist (phase 2),
+  and store-guard.sh is named in no settings.json (this repo's, the
+  workspace's, `~/.claude`), nor installed in the workspace's `.claude/hooks/`.
+  So V1 is **partial**: it waits on Jacob's `./usage init` and the hook's
+  registration (V2, setup; settings are Jacob's).
 - **hits.tsv gained two columns (2026-10-09)**: `five_hour_resets_at`,
   `seven_day_resets_at`, for `hits --json`'s `resets_at`. An existing hits.tsv
   with the old 6-column header is now refused (HeaderMismatch, recorded in
@@ -41,6 +39,13 @@
 
 ## Open decisions
 
+- **`size_tokens` is a first value, not a measurement (2026-10-09, item 7).**
+  usage.json `size_tokens` S 4,000,000, M 12,000,000 (input + output + cache
+  read + cache write, the gate's sum) came from one session's totals (main opus
+  ~4.75M, see the dedupe note below), not from sized items. Probe: once items
+  carry sizes and handoffs, `usage tokens --by session` per dispatch grouped by
+  the item's size; a reviewed commit moves the values. Hinges on: sized items
+  existing, and the hub (which calls `gate --todo`).
 - **`hits --json`'s `resets_at` is strict (2026-10-09)**: given only when the
   hit's sample is fresh, exactly one window is at or past `hold` and its reset
   is after the hit; else null (both high, neither, stale, no reset). A refinement
@@ -142,11 +147,6 @@
   (the ask in .claude/TODO.md). `tests/test_questions.py HitsJson
   test_the_consumer_reads_it` runs `.claude/lib/usage-hits.sh` against this
   CLI: OK. No store is exit 1, never `[]`.
-- **setup / hooks, 2026-10-09 (via the dispatcher): `shared:hooks-installed`
-  FAILS here** on `.claude/hooks/` and `.claude/lib/` copies this repo did not
-  change: store-guard.sh, test-store-guard.sh, lib/extra-stores.sh missing;
-  no-inline-blobs, prefer-recipes, test-write-ledger, lib/ledger.sh,
-  lib/write-targets.sh drifted. Expected: setup re-run installs them (V2).
 - **dispatcher, 2026-10-09:** the V1 brief said "no origin yet, so no push";
   origin exists (github.com/CyberImpXIII/usage) and the commit was pushed.
 - **The `.claude/` layer's owner and setup's owner, 2026-10-05:** `CHECKS_ROSTER_NAMES` for this

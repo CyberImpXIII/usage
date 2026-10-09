@@ -15,14 +15,16 @@ import time
 
 from pathlib import Path
 
-from . import calc, config, datarepo, export, store
+from . import calc, config, datarepo, export, store, todo
 
 HELP = """\
   usage status                   latest 5h and 7d %, resets, time since the sample
   usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
   usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
-  usage gate <tokens>            exit 0 if <tokens> fit before the window's reset under the burn so far;
+  usage gate <tokens>|--todo <id>   exit 0 if <tokens> fit before the window's reset under the burn so far;
                                  exit 1 with "hold until <time>" otherwise. The hub's question.
+                                 --todo <id>: <tokens> is the todo item's size (usage.json size_tokens, via `todo get`);
+                                 exit 3, unchecked and no number, when it is unsized, L or unreadable
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
@@ -137,12 +139,25 @@ def cmd_project(args):
     return 0
 
 
+UNCHECKED = 3  # gate --todo: no estimate, so no answer (never a number)
+
+
 def cmd_gate(args):
-    if len(args) != 1 or not args[0].isdigit():
-        return _usage_error("gate <tokens>, a whole number")
-    code, line, detail = calc.gate(int(args[0]))
+    note = None
+    if len(args) == 2 and args[0] == "--todo" and args[1] and not args[1].startswith("-"):
+        rec, why = todo.get(args[1])
+        tokens, size, why = todo.estimate(rec) if rec is not None else (None, None, why)
+        if tokens is None:
+            print(f"unknown, unchecked: {why}")
+            return UNCHECKED
+        note = f"estimate: todo:{rec['id']} size {size} = {tokens} tokens (usage.json size_tokens)"
+    elif len(args) == 1 and args[0].isdigit():
+        tokens = int(args[0])
+    else:
+        return _usage_error("gate <tokens>, a whole number, or gate --todo <id>")
+    code, line, detail = calc.gate(tokens)
     print(line)
-    for d in detail:
+    for d in ([note] if note else []) + detail:
         print(f"  {d}")
     return code
 

@@ -20,8 +20,10 @@ repo. No script runs a model: the cost is a few milliseconds of Python per event
   usage status                   latest 5h and 7d %, resets, time since the sample
   usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
   usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
-  usage gate <tokens>            exit 0 if <tokens> fit before the window's reset under the burn so far;
+  usage gate <tokens>|--todo <id>   exit 0 if <tokens> fit before the window's reset under the burn so far;
                                  exit 1 with "hold until <time>" otherwise. The hub's question.
+                                 --todo <id>: <tokens> is the todo item's size (usage.json size_tokens, via `todo get`);
+                                 exit 3, unchecked and no number, when it is unsized, L or unreadable
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
@@ -57,6 +59,17 @@ dispatch table, both ways, and checks every command the plan lists exists.
   job. **pass** (exit 0): below both.
 - **A stale sample holds:** no sample, or one older than `sample_stale_minutes`,
   gives `unknown, hold` (exit 1). A stale number is a wrong answer.
+
+**`usage gate --todo <id>`** takes the job's tokens from a todo item's `size`
+(PLAN-architecture-review.md item 7), read through tools/todo's own CLI,
+`todo get <id>`, never its files (`$USAGE_TODO_CLI`, else `../todo/todo`, run in
+`$USAGE_TODO_DIR`, else its own folder; `$TODO_ROOT` passes through). The
+estimate per size is data, usage.json `size_tokens` (S 4,000,000, M 12,000,000:
+a first value, not yet measured). An unsized item, an L one (todo says split
+it), a closed one, a size with no entry, or a todo that cannot answer is exit 3,
+`unknown, unchecked: <why>`, with no number. `tests/test_gate_todo.py` runs the
+real todo CLI on a scratch store (changing the size changes the answer) and a
+stub for the failure paths.
 
 Weighting by model is not applied: a token of any model counts the same toward
 the ratio (TODO.md).
