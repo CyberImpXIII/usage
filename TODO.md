@@ -143,6 +143,18 @@
 
 ## Reported to other owners
 
+- **setup / hooks, 2026-10-09 (via the dispatcher): `./dev.sh check` FAILs
+  `shared:hooks-installed`** with drift in `.claude/lib/extra-stores.sh`,
+  `.claude/hooks/store-guard.sh`, `test-store-guard.sh`,
+  `test-no-inline-blobs.sh`: tools/hooks moved on (b7a8c6b, ec06599) after
+  this repo's re-render at eb09868 (5954975). The re-render is setup's;
+  not copied by hand here. Also an uncommitted `.claude/settings.json` (not
+  ours, same diff shape in tools/hooks, setup, checks): left untouched.
+- **todo, 2026-10-09 (via the dispatcher): no CLI prints the size
+  vocabulary**, so `VocabSeam` (size_tokens == todo's `ready` sizes) reads
+  tools/todo/vocab.json directly, read only. A `todo vocab sizes --json`
+  would let it go through the CLI.
+
 - **harness, 2026-10-09 (via the dispatcher): `usage hits --json` has landed**
   (the ask in .claude/TODO.md). `tests/test_questions.py HitsJson
   test_the_consumer_reads_it` runs `.claude/lib/usage-hits.sh` against this

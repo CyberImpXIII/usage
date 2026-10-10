@@ -117,6 +117,22 @@ class RealTodo(Slope):
         self.assertIn("choose from S, M, L", r.stderr)
 
 
+class VocabSeam(Case):
+    def test_size_tokens_covers_exactly_todo_s_ready_sizes(self):
+        """By meaning: usage.json size_tokens has an estimate for every size
+        tools/todo marks `ready` and for none it marks not ready (split first).
+        todo's CLI prints no vocabulary, so this reads its vocab.json, read
+        only; skipped by name when tools/todo is absent. Catches what the
+        XL probe in RealTodo cannot: a size whose `ready` flag flips."""
+        vocab = ROOT.parent / "todo" / "vocab.json"
+        if not vocab.is_file():
+            self.skipTest(f"no {vocab}")
+        sizes = {k: v for k, v in json.loads(vocab.read_text())["sizes"].items() if not k.startswith("_")}
+        ready = {k for k, v in sizes.items() if v.get("ready") is True}
+        self.assertTrue(ready, f"todo's vocab names no ready size: {sizes}")
+        self.assertEqual(set(size_tokens()), ready, "usage.json size_tokens vs todo's ready sizes")
+
+
 class Workspace(Case):
     def test_the_default_folder_is_where_todo_scans_from(self):
         """todo's rule for a folder with no store: it scans from there when it
