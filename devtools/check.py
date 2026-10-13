@@ -19,8 +19,8 @@ Text by default; --json prints the one schema (tools/checks'
 schema/check-json.schema.json), ok false iff a check is fail or error. Exit 1
 when not ok; else 3 when a gate named (or, with none named, any gate) did not
 run at all (its one result is UNCHECKED: guard with no hook, shared with no
-tools/checks), so the runner, which knows only exit codes, reports that part
-red, never ok; else 0. A shared check that is UNCHECKED on its own (it does not
+tools/checks), the runner's exit for "could not judge": it reports that part
+`UNCHK`, never ok, and re-runs it on --resume; else 0. A shared check that is UNCHECKED on its own (it does not
 apply here) is a line of the shared gate, not the gate unrun: exit 0.
 """
 import json

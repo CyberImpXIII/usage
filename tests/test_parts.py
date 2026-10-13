@@ -1,7 +1,7 @@
 """`./dev.sh check` in parts (PLAN-small-tasks §3, §7): check.parts.json is
 valid for the runner and lists one part per test module and one per gate of
 devtools/check.py, both ways; dev.sh hands its options to the runner (check,
---resume, test <part>); a gate that did not run (exit 3) is a red part; and the
+--resume, test <part>); a gate that did not run (exit 3) is unchecked, never ok; and the
 runner copy agrees with tools/checks' when that sibling is here."""
 import importlib.util
 import json
@@ -66,18 +66,21 @@ class RunnerCopy(unittest.TestCase):
 
 
 class DevShHandsOver(unittest.TestCase):
-    """A scratch suite (CHECK_PARTS) of three parts, the third exiting 3 as a gate
-    that did not run does: dev.sh's options reach the runner and the run is red."""
+    """A scratch suite (CHECK_PARTS): two passing parts, one exiting 3 as a gate
+    that did not run does (runner 1.2.0: unchecked, never ok, never red), and one
+    that fails until c.txt says good. dev.sh's options reach the runner."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="usage-parts-"))
-        for n in ("a", "b"):
-            (self.tmp / f"{n}.txt").write_text(n)
+        for n, text in (("a", "a"), ("b", "b"), ("c", "bad")):
+            (self.tmp / f"{n}.txt").write_text(text)
         doc = {"parts": [
             {"name": "pa", "run": "echo ran-a >> runs.log", "files": ["a.txt"], "timeout_s": 30},
             {"name": "pb", "run": "echo ran-b >> runs.log", "files": ["b.txt"], "timeout_s": 30},
-            {"name": "unrun", "run": "echo 'check: UNCHECKED (did not run: guard)'; exit 3", "files": ["a.txt"],
-             "timeout_s": 30}]}
+            {"name": "unrun", "run": "echo ran-u >> runs.log; echo 'check: UNCHECKED (did not run: guard)'; exit 3",
+             "files": ["a.txt"], "timeout_s": 30},
+            {"name": "red", "run": "echo ran-r >> runs.log; grep -q good c.txt || { echo 'FAIL c.txt is bad'; exit 1; }",
+             "files": ["c.txt"], "timeout_s": 30}]}
         self.parts = self.tmp / "s.parts.json"
         self.parts.write_text(json.dumps(doc))
         self.env = dict(os.environ, CHECK_PARTS=str(self.parts), PROGRESS_FILE=str(self.tmp / "progress.json"))
@@ -98,12 +101,13 @@ class DevShHandsOver(unittest.TestCase):
     def test_check_names_the_red_part_and_resume_reruns_only_what_changed(self):
         r = self.dev("check")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn("2 of 3 passed; failed: unrun", r.stdout)
-        self.assertEqual(self.runs(), ["ran-a", "ran-b"])
-        (self.tmp / "b.txt").write_text("changed")
+        self.assertIn("2 of 4 passed; failed: red", r.stdout)
+        self.assertIn("unchecked: unrun", r.stdout)
+        self.assertEqual(self.runs(), ["ran-a", "ran-b", "ran-u", "ran-r"])
+        (self.tmp / "c.txt").write_text("good")
         r = self.dev("check", "--resume")
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertEqual(self.runs(), ["ran-b"])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.runs(), ["ran-u", "ran-r"])  # pa, pb unchanged since they passed: skipped
 
     def test_test_part_runs_that_part_alone(self):
         r = self.dev("test", "pb")

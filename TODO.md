@@ -14,16 +14,23 @@
   githooks component plus a `record` step here, not done. (The settings half
   is done: `.claude/settings.json` == setup's proposal, committed eed5a47, Q6b.)
 - **`./dev.sh check` runs in parts (Q7, 2026-10-13)** through devtools/parts.py
-  (setup's render of tools/checks' runner, 1.1.0, byte-equal; test_parts
-  `RunnerCopy` goes red when checks moves on: `setup tools/usage --only parts
-  --rebuild`). Decision taken: a gate that did not run at all (guard with no
-  hook, shared with no tools/checks) exits 3 from devtools/check.py, so its
-  part is RED, where the old one-process check printed UNCHECKED and passed.
-  The runner knows only exit codes; ok would be a wrong answer. Consequence: a
-  lone clone's check is red until tools/checks is beside it. A shared check
-  UNCHECKED on its own (repro, stores-exported, ...) still passes, as before.
+  (setup's render of tools/checks' runner; 1.1.0 at ba7f6a6, 1.2.0 since
+  a6e197d, byte-equal; test_parts `RunnerCopy` goes red whenever checks moves
+  on: `setup tools/usage --only parts --rebuild`, which needs a clean tree and
+  commits its render). A gate that did not run at all (guard with no hook,
+  shared with no tools/checks) exits 3 from devtools/check.py: runner 1.2.0's
+  `UNCHK`, never ok, not red, re-run by --resume. A shared check UNCHECKED on
+  its own (repro, stores-exported, ...) is a line of the shared part, exit 0.
   Lost: `--json` now has one `shared` entry, not one per shared check (the
-  names are in its log, `.progress/check.json.logs/shared.log`).
+  names are in `.progress/check.json.logs/shared.log`).
+- **The hooks part is slow under load**: 900s timed out at load ~40 on
+  2026-10-13 (run 2, no output: the hook tests print only at the end); now
+  2400s. Probe: its time in a quiet run, `jq .last_duration_s` is suite-wide,
+  so read the `hooks` line of `./dev.sh check`.
+- **settings.json lacks 3 registrations again (2026-10-13)**: after setup's
+  3934630 render, settings.proposed.json adds git-funnel.sh and store-guard.sh
+  (x2); `cp .claude/settings.proposed.json .claude/settings.json` is Jacob's
+  step, not taken here.
 - **TODO import skipped (Q7, 2026-10-13)**: this TODO.md was not imported into
   the todo store: todo's importer is being fixed (dispatcher's brief).
 - **`state/` grows with each transcript** (one file per transcript, a per-message

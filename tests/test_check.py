@@ -1,7 +1,7 @@
 """The gates (devtools/check.py): its --json keeps the schema's rules (the full
 validator is tools/checks' `checks one check-json`, an audit-role run), a red
-gate is red, and a gate that did not run exits 3 (the parts runner knows only
-exit codes, so that part is red, never ok). The runner itself and the parts
+gate is red, and a gate that did not run exits 3 (the parts runner's
+`unchecked`, never ok). The runner itself and the parts
 file are tests/test_parts.py's."""
 import json
 import shutil

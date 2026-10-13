@@ -206,8 +206,9 @@ ends `check: N of M passed; failed: <part> ...`, and `--resume` re-runs only the
 parts whose declared files changed since they passed (a part reading a sibling
 repo or the workspace says `always` and always runs). `./dev.sh test <part>...`
 runs just those parts and records them for a later `--resume`; `./dev.sh test`
-alone runs the suite at once. A gate that did not run at all exits 3, so its
-part is red, never ok. `tests/test_parts.py` holds the parts to the test
+alone runs the suite at once. A gate that did not run at all exits 3, which
+the runner (1.2.0) reports `UNCHK`, never ok: not a pass, not kept for
+`--resume`, and not red (a lone clone's absent sibling). `tests/test_parts.py` holds the parts to the test
 modules and the gates, both ways.
 
 The gates (`python3 devtools/check.py [--json] [GATE...]`): `files` (scripts present,
