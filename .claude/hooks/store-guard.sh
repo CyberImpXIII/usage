@@ -16,7 +16,11 @@
 # path relative to a repo root: it is resolved against every directory above
 # the target that holds a CLAUDE.md (so `todo.json` is each repo's own
 # store, not any file of that name in a folder no repo owns). Its block
-# message names what really writes it.
+# message names what really writes it. A cli.json wins: every cli.json above
+# the target is read (real path too) before the list, so where both name a
+# store the message is the cli.json's. The list is a stopgap; an entry that
+# a cli.json names wherever it exists fails test-extra-stores.sh, so it is
+# dropped once its owner's cli.json lands, not kept as a second source.
 #
 # Blocked (exit 2): a write to a named store, or to its SQLite side files
 # (`-wal`, `-shm`, `-journal`). The message names the CLI and its verbs.
@@ -199,14 +203,15 @@ block_extra() {   # <target as given> <store> <index in the list>
 }
 
 # check_form <target as given> <form: the target or its real path> <ids>
+#            <which: cli (each cli.json above) | extra (the extra-stores list)>
 check_form() {
-  local p=$1 f=$2 ids=$3 base d dir key val cli verbs stores s sl ci sid k
+  local p=$1 f=$2 ids=$3 which=$4 base d dir key val cli verbs stores s sl ci sid k
   base=$f
   case "$f" in *-wal|*-shm|*-journal) base=${f%-*} ;; esac
   d=${f%/*}
   while :; do
     dir=${d:-/}
-    if [ -f "$dir/cli.json" ]; then
+    if [ "$which" = cli ] && [ -f "$dir/cli.json" ]; then
       cli=""; verbs=""; stores=()
       while IFS=$'\t' read -r key val; do
         case "$key" in
@@ -230,7 +235,7 @@ check_form() {
       fi
     fi
     # The extra-stores list, against each repo root above (a CLAUDE.md there).
-    if [ ${#X_PAT[@]} -gt 0 ] && [ -f "$dir/CLAUDE.md" ]; then
+    if [ "$which" = extra ] && [ ${#X_PAT[@]} -gt 0 ] && [ -f "$dir/CLAUDE.md" ]; then
       ci=0; caseless "$dir" claude.md && ci=1
       for k in "${!X_PAT[@]}"; do
         sl=${dir%/}/${X_PAT[$k]}
@@ -251,9 +256,14 @@ check_target() {   # <absolute target>; exits 2 on a store
   local p=$1 ids="" i b
   i=$(ident "$p") && ids=$i
   case "$p" in *-wal|*-shm|*-journal) b=${p%-*}; i=$(ident "$b") && ids="$ids $i" ;; esac
-  check_form "$p" "$p" "$ids"
   real_of "$p"
-  [ "$REAL" = "$p" ] || check_form "$p" "$REAL" "$ids"
+  # Every cli.json first, both forms, then the list: where both name a store
+  # the cli.json wins wherever it sits (a cli.json above a repo root that
+  # names `sub/x` is read before that root's list entry `x`).
+  check_form "$p" "$p" "$ids" cli
+  [ "$REAL" = "$p" ] || check_form "$p" "$REAL" "$ids" cli
+  check_form "$p" "$p" "$ids" extra
+  [ "$REAL" = "$p" ] || check_form "$p" "$REAL" "$ids" extra
   return 0
 }
 

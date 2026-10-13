@@ -2,8 +2,13 @@
 # hooks: applies_to=all dest=.claude/lib
 # SOURCED, not executed. The stores store-guard.sh holds that no `cli.json`
 # names yet (PLAN-architecture-review.md §4, W7 and O1): named here so a
-# store is guarded before its owner adds a cli.json (where both name a
-# store, the cli.json is read first and its message is the one shown).
+# store is guarded before its owner adds a cli.json. A cli.json WINS: the
+# hook reads every cli.json above a target before this list, so where both
+# name a store the cli.json's CLI is the message. An entry stays only while
+# some instance of it has no cli.json naming it (todo.json: income's has
+# none); once a cli.json names it wherever it exists, the entry is a second
+# source that can drift (site-scrapers' data/failures.db named failures.js
+# here, store.sh there), and test-extra-stores.sh fails it until dropped.
 # Its source is tools/hooks (source/lib/); `hooks copies` there fails when a
 # copy differs from it. Change the source, never a copy.
 # Tests: bash tools/hooks/source/tests/test-extra-stores.sh
@@ -27,7 +32,6 @@ extra_stores() {
   printf '%s\t%s\t%s\n' \
     'todo.json'           'tools/todo/todo'            'run the todo CLI from that repo (todo add, edit, done, ...)' \
     'todo-history.json'   'tools/todo/todo'            'run the todo CLI from that repo (todo done moves an item here)' \
-    'data/failures.db'    'site-scrapers/failures.js'  'node failures.js record or forget, from that repo' \
     '.claude/state/*.tsv' '-'                          'only the hooks that append it write it; nothing else should' \
     '.claude/state/*.jsonl' '-'                        'only the hooks and agents.sh append it; nothing else should'
 }

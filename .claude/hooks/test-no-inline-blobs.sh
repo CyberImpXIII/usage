@@ -164,6 +164,53 @@ check 0 "sed -e"              'sed -e "s/a/b/" file.txt'
 check 0 "empty input"         ''
 cpu; c_short=$((CPU - c1))
 
+# FAILS OPEN, tested on the failure rather than promised in the header. A
+# payload the hook cannot read, or a command its reader cannot make sense of,
+# must allow (exit 0) and must not hang: Claude Code reads a hook's non-zero
+# exit as a block, so a reader that tripped on bad input would refuse ordinary
+# work. Each run is bounded (a watchdog kills it at 20s, the timeout
+# settings.json gives the hook; a kill reads as exit 137 and fails here).
+check_raw() {
+  local want="$1" desc="$2" payload="$3" pid w got
+  printf '%s' "$payload" > "$TF.in"
+  bash "$HOOK" < "$TF.in" >/dev/null 2>&1 & pid=$!
+  ( sleep 20; kill -9 "$pid" ) >/dev/null 2>&1 & w=$!
+  wait "$pid"; got=$?
+  kill "$w" >/dev/null 2>&1; wait "$w" 2>/dev/null
+  rm -f "$TF.in"
+  if [ "$got" = "$want" ]; then
+    printf '  ok    %-28s (exit %s)\n' "$desc" "$got"
+  else
+    printf '  FAIL  %-28s expected exit %s, got %s\n' "$desc" "$want" "$got"
+    fails=$((fails + 1))
+  fi
+}
+check_cmd() { check_raw "$1" "$2" "$(printf '{"tool_input":{"command":%s}}' "$(printf '%s' "$3" | jq -Rs .)")"; }
+echo "malformed input fails OPEN (exit 0, bounded):"
+check_raw 0 "payload: nothing"          ''
+check_raw 0 "payload: {}"               '{}'
+check_raw 0 "payload: not json"         'not json'
+check_raw 0 "payload: no command"       '{"tool_input":{}}'
+check_raw 0 "payload: command null"     '{"tool_input":{"command":null}}'
+check_raw 0 "payload: tool_input a str" '{"tool_input":"python3 -c x"}'
+# Truncated JSON that would hold a blob: unreadable is allowed, not guessed at.
+check_raw 0 "payload: truncated json"   '{"tool_input":{"command":"python3 -c \"x'
+check_cmd 0 "cmd: unclosed \""          'echo "abc'
+check_cmd 0 "cmd: unclosed '"           "echo 'abc"
+check_cmd 0 "cmd: unclosed \$( + heredoc" "x=\$(cat <<'EOF'
+perl and python3 named in text"
+check_cmd 0 "cmd: stray )"              'echo hi ) )'
+check_cmd 0 "cmd: << with no word"      'cat <<'
+check_cmd 0 "cmd: <<- with no word"     'cat <<- ; ls'
+check_cmd 0 "cmd: unclosed backtick"    'echo `date'
+check_cmd 0 "cmd: unclosed \$(("        'echo $((1+'
+check_cmd 0 "cmd: data heredoc, no end" "cat > x.md <<'EOF'
+node -e \"x\" named in an unterminated body"
+check_cmd 0 "cmd: trailing backslash"   'echo abc \'
+# The counterfactual, through the same bounded runner: it can report a block.
+check_cmd 2 "cmd: interp heredoc, no end" 'python3 - <<PY
+print(1)'
+
 # The long case, in time. The reader once took a character at a time from the
 # whole string, which bash pays for by the string's length: the long case took
 # 171s (chronjobScheduler's copy, 2026-10-08), and every long Bash call paid

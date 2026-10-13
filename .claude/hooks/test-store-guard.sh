@@ -187,7 +187,6 @@ want 2 "a redirect into todo-history.json" Bash "echo x > todo-history.json" "$K
 want 2 "a nested repo's own todo.json"   Write "$K/inner/todo.json" "$K" "" "$TODO_CLI"
 want 2 "a ledger (.claude/state/*.tsv)"  Write "$K/.claude/state/writes.tsv" "$K" "" "only the hooks that append it"
 want 2 "an append to a .jsonl ledger"    Bash  "printf x >> .claude/state/agent-ledger.jsonl" "$K" "" "only the hooks and agents.sh"
-want 2 "a sqlite3 write to data/failures.db" Bash "sqlite3 data/failures.db 'DELETE FROM f'" "$K" "" '`site-scrapers/failures.js`'
 want 2 "a hard link to todo.json"        Write "$K/hard-todo.json" "$K" "" "$TODO_CLI"
 want 2 "a symlink from outside to it"    Write "$E/todo-link" "$E" "" "$TODO_CLI"
 if [ -e "$K/TODO.JSON" ]; then
@@ -202,7 +201,6 @@ want 0 "todo.json with no repo above"    Write "$T/norepo/todo.json" "$T/norepo"
 want 0 "todo.json below a repo root"     Write "$K/docs/todo.json" "$K"
 want 0 "todo.json.bak at a repo root"    Write "$K/todo.json.bak" "$K"
 want 0 "a state file that is no ledger"  Write "$K/.claude/state/session.json" "$K"
-want 0 "data/failures.db read-only"      Bash  "sqlite3 -readonly data/failures.db 'SELECT 1'" "$K"
 want 0 "reading todo.json"               Bash  "cat todo.json" "$K"
 want 0 "the todo CLI"                    Bash  "tools/todo/todo add x" "$K"
 
@@ -211,10 +209,31 @@ X=$T/xl
 mkdir -p "$X/hooks" "$X/lib" "$T/xr/sub"; printf '# x\n' > "$T/xr/CLAUDE.md"
 cp "$HOOK" "$X/hooks/"; cp "$DIR/../lib/write-targets.sh" "$X/lib/"
 printf '%s\t%s\t%s\n' "$T/xr/abs.json" w h '~/home.json' w h ../up.json w h sub/../dots.json w h \
-  nofield.json w '' ok.json tools/x 'run x' > "$X/list.tsv"
+  nofield.json w '' ok.json tools/x 'run x' data/x.db tools/x 'run x' > "$X/list.tsv"
 printf 'extra_stores() { cat %q; }\n' "$X/list.tsv" > "$X/lib/extra-stores.sh"
 XH=$X/hooks/store-guard.sh
 want 2 "a well-formed entry blocks"      Write "$T/xr/ok.json" "$T/xr" "$XH" '`tools/x` (from the workspace top): run x'
+want 2 "a sqlite3 write to a listed db"  Bash  "sqlite3 data/x.db 'DELETE FROM f'" "$T/xr" "$XH" '`tools/x`'
+want 0 "  that db opened -readonly"      Bash  "sqlite3 -readonly data/x.db 'SELECT 1'" "$T/xr" "$XH"
+
+# Both a cli.json and the list name a store: the cli.json wins, wherever it
+# sits, and the list's message is not shown (extra-stores.sh's header).
+echo "a store both name: the cli.json wins"
+mkdir -p "$T/xw" "$T/xu/in"
+printf '# w\n' > "$T/xw/CLAUDE.md"; printf '# in\n' > "$T/xu/in/CLAUDE.md"
+printf '{"store": "ok.json", "cli": "w.sh", "verbs": ["set"]}\n' > "$T/xw/cli.json"
+printf '{"store": "in/ok.json", "cli": "u.sh", "verbs": ["set"]}\n' > "$T/xu/cli.json"   # above the repo root
+: > "$T/xu/in/ok.json"; ln -s "$T/xu/in/ok.json" "$E/xu-link"
+wins() {   # <desc> <tool> <target> <cwd> <the cli.json's CLI>
+  local err code
+  err=$(input "$2" "$3" "$4" | bash "$XH" 2>&1 >/dev/null); code=$?
+  if [ "$code" = 2 ] && printf '%s' "$err" | grep -qF -- "$5" && ! printf '%s' "$err" | grep -qF 'extra-stores list'; then pass "$1"
+  else fail "$1" "want exit 2 naming $5 and not the list, got $code: ${err:0:300}"; fi
+}
+wins "the same directory"                Write "$T/xw/ok.json"   "$T/xw" "\`$T/xw/w.sh\` (verbs: set)"
+wins "a cli.json above the repo root"    Write "$T/xu/in/ok.json" "$T/xu/in" "\`$T/xu/u.sh\` (verbs: set)"
+wins "  a Bash write there"              Bash  "echo x > ok.json" "$T/xu/in" "\`$T/xu/u.sh\`"
+wins "  through a symlink from outside"  Write "$E/xu-link" "$E" "\`$T/xu/u.sh\`"
 want 0 "an absolute entry matches nothing" Write "$T/xr/abs.json" "$T/xr" "$XH"
 want 0 "a ~ entry is skipped"            Write "$T/xr/~/home.json" "$T/xr" "$XH"
 want 0 "a .. entry matches nothing"       Write "$T/up.json" "$T/xr" "$XH"
