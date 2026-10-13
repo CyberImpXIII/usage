@@ -27,11 +27,18 @@ standard library only, no import from beside it, so a copy works alone
       a resumable progress file and whose hash is unchanged (never an
       `always` part), listed in `kept`, so a later --resume still skips them.
       An unknown name, or --only with --resume, is refused.
+      A part that exits 3 is `unchecked` (it could not judge, e.g. a lone
+      clone with no sibling repo): text `UNCHK <name>` and its last output
+      line, the summary adds `; unchecked: <name> (<that line>)`; it is neither
+      a pass nor a fail, is not kept for --resume, and does not make the run red.
       --json: stdout is one document in tools/checks/schema/check-json.schema.json,
-      one check per part (a timeout `error`, a non-zero exit `fail`, a skipped
-      part `ok` with counts.skipped 1). Exit 0 iff every part run passed, 1 if
-      not, 2 when the parts file or the options are refused (with --json,
-      still one document).
+      one check per part (a timeout `error`, exit 3 `unchecked` with `reason`
+      `exit 3: <last line>`, any other non-zero exit `fail`, a skipped part `ok`
+      with counts.skipped 1). A failure's `file`/`line` come from a FAIL/ERROR
+      line shaped `FAIL <file>:<n> ...` when <file> is a file inside the parts
+      folder (given relative to it); otherwise both are null, never a guess.
+      Exit 0 iff no part run failed or errored, 1 if one did, 2 when the parts
+      file or the options are refused (with --json, still one document).
   parts.py validate <parts.json>   each fault on one line, exit 1; or `ok: N parts`
   parts.py files <parts.json> <name>   what that part's hash reads, one line per
       path: `content|shape|except|missing|gone <path>`
@@ -96,13 +103,15 @@ import sys
 import tempfile
 import time
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 NAME = re.compile(r"[A-Za-z0-9._-]+\Z")
 PART_KEYS = {"name", "run", "files", "except", "shape", "timeout_s", "role", "always", "_comment"}
 DEFAULT_KEYS = {"files", "except", "shape", "timeout_s", "role", "_comment"}
 LISTS = ("files", "except", "shape")
 FAIL_LINE = re.compile(r"^\s*(FAIL|ERROR)\b")
+LOCATION = re.compile(r"^\s*(?:FAIL|ERROR):?\s+([^\s:]+):([1-9][0-9]*)(?![0-9])")
 MAX_FAIL_LINES = 8
+EXIT_UNCHECKED = 3
 
 
 class Refused(Exception):
@@ -380,10 +389,14 @@ class Progress:
         self.write()
 
     def step(self, name, ok, h):
+        """ok None: the part said unchecked -- counted in step, neither passed
+        nor failed, and not kept for --resume (it runs again)."""
         s = self.state
         s["step"] += 1
         s["label"] = name
-        if ok:
+        if ok is None:
+            pass
+        elif ok:
             s["passed"] += 1
             s["passed_steps"].append(name)
             s["hashes"][name] = h
@@ -470,6 +483,21 @@ def kill_tree(pid):
             pass
 
 
+def location(base, line):
+    """(file, line) from a `FAIL <file>:<n>` / `ERROR <file>:<n>` line, the file
+    repo-relative and existing under base; else (None, None): never a guess
+    (a time such as `10:30`, or a path that is not there, gives nulls)."""
+    m = LOCATION.match(line)
+    if not m:
+        return None, None
+    path = m.group(1)
+    full = os.path.realpath(os.path.join(base, path))
+    root = os.path.realpath(base)
+    if not full.startswith(root + os.sep) or not os.path.isfile(full):
+        return None, None
+    return os.path.relpath(full, root), int(m.group(2))
+
+
 def fail_lines(log):
     try:
         with open(log, errors="replace") as fh:
@@ -483,7 +511,8 @@ def fail_lines(log):
 
 
 def run_part(base, part, logs):
-    """(status ok|fail|error, why, failure lines, seconds, log path)."""
+    """(status ok|fail|unchecked|error, why, failure lines, seconds, log path).
+    For `unchecked` the one line is the reason (the part's last output line)."""
     log = os.path.join(logs, part["name"] + ".log")
     t0 = time.monotonic()
     with open(log, "w") as out:
@@ -491,7 +520,8 @@ def run_part(base, part, logs):
                              stdout=out, stderr=subprocess.STDOUT)
         try:
             code = p.wait(timeout=part["timeout_s"])
-            status, why = ("ok", "") if code == 0 else ("fail", f"exit {code}")
+            status, why = ("ok", "") if code == 0 else (
+                ("unchecked", f"exit {code}") if code == EXIT_UNCHECKED else ("fail", f"exit {code}"))
         except subprocess.TimeoutExpired:
             kill_tree(p.pid)
             p.wait()
@@ -501,6 +531,8 @@ def run_part(base, part, logs):
             p.wait()
             raise
     fails, last = fail_lines(log)
+    if status == "unchecked":
+        return status, why, [last or f"{why}; no output"], time.monotonic() - t0, log
     if status != "ok" and not fails:
         fails = [f"{why}; last output: {last}" if last else f"{why}; no output"]
     return status, why, fails, time.monotonic() - t0, log
@@ -508,8 +540,9 @@ def run_part(base, part, logs):
 
 # ---- the run ---------------------------------------------------------------
 
-def entry(name, status, role, fails=(), reason=None, skipped=False):
-    failures = [{"message": m, "file": None, "line": None, "role": role} for m in fails]
+def entry(name, status, role, fails=(), reason=None, skipped=False, base=None):
+    failures = [dict(zip(("file", "line"), location(base, m) if base else (None, None)), message=m, role=role)
+                for m in fails]
     e = {"name": name, "status": status, "counts": {"failed": len(failures)}, "failures": failures}
     if skipped:
         e["counts"]["skipped"] = 1
@@ -611,7 +644,7 @@ def cmd_run(args):
         pf.state.update(only=[p["name"] for p in parts], kept=kept, passed_steps=list(kept),
                         hashes={n: hashes[n] for n in kept})
         pf.write()
-    checks, failed, n, stopped, current = [], [], 0, None, None
+    checks, failed, unchecked, n, stopped, current = [], [], [], 0, None, None
 
     def restore():
         for s, hd in old_handlers.items():
@@ -630,9 +663,16 @@ def cmd_run(args):
             pf.label(name)
             status, why, fails, secs, log = run_part(base, part, pf.log_dir())
             ok = status == "ok"
-            pf.step(name, ok, h)
-            checks.append(entry(name, status, part["role"], [] if ok else fails))
             rel = os.path.relpath(log, base) if log.startswith(base + os.sep) else log
+            if status == "unchecked":
+                pf.step(name, None, h)
+                checks.append(entry(name, status, part["role"], reason=f"{why}: {fails[0]}"))
+                unchecked.append(f"{name} ({fails[0]})")
+                say(f"UNCHK {name} ({why}, {secs:.0f}s; log: {rel})")
+                say(f"  {fails[0]}")
+                continue
+            pf.step(name, ok, h)
+            checks.append(entry(name, status, part["role"], [] if ok else fails, base=base))
             if ok:
                 n += 1
                 say(f"ok    {name} ({secs:.0f}s)")
@@ -657,7 +697,7 @@ def cmd_run(args):
                                     reason=f"not run: the runner was stopped by signal {stopped}"))
     finally:
         restore()
-    all_ok = n == len(parts)
+    all_ok = n + len(unchecked) == len(parts)        # a part that said unchecked is neither a pass nor a fail
     pf.end("passed" if all_ok else "failed")
     if only:
         result = {c["name"]: c for c in checks}
@@ -666,9 +706,10 @@ def cmd_run(args):
     if as_json:
         print(json.dumps({"ok": all_ok, "checks": checks}))
     else:
-        not_run = sum(c["status"] == "unchecked" for c in checks)
+        not_run = sum(c["status"] == "unchecked" for c in checks) - len(unchecked)
         said = "; not run: " + (f"{not_run} (--only)" if only and not stopped else str(not_run))
-        say(summary(n, len(parts), failed) + (said if not_run else ""))
+        said_unchecked = "; unchecked: " + "; ".join(unchecked) if unchecked else ""
+        say(summary(n, len(parts), failed) + said_unchecked + (said if not_run else ""))
     if stopped is not None:
         return 128 + stopped
     return 0 if all_ok else 1
