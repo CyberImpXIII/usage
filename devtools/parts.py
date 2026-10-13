@@ -43,6 +43,10 @@ standard library only, no import from beside it, so a copy works alone
   parts.py files <parts.json> <name>   what that part's hash reads, one line per
       path: `content|shape|except|missing|gone <path>`
   parts.py version                 this runner's version
+  parts.py usage [--json]          this text on stdout; --json: one document,
+      {runner, version, commands, run: {usage, args, options: [{flag, value,
+      repeatable}], exclusive: [[flag, flag]]}}, built from the same table as
+      run's argument check: a consumer reads this, never the text above
 
 THE PARTS FILE: {"parts": [part, ...], "defaults"?: {...}, "_comment"?}
   part: {"name", "run", "files", "timeout_s", "except"?, "shape"?, "role"?,
@@ -103,7 +107,7 @@ import sys
 import tempfile
 import time
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 NAME = re.compile(r"[A-Za-z0-9._-]+\Z")
 PART_KEYS = {"name", "run", "files", "except", "shape", "timeout_s", "role", "always", "_comment"}
 DEFAULT_KEYS = {"files", "except", "shape", "timeout_s", "role", "_comment"}
@@ -570,7 +574,46 @@ def refused(args, faults, as_json):
     return 2
 
 
-RUN_USAGE = "run <parts.json> [--resume | --only <name>...] [--json]"
+# run's options, the one source of its usage line, its argument check and
+# `usage --json` (what a consumer reads, never the help text): {flag: the
+# value it takes or None}, in usage order; the ones that repeat; the pairs
+# refused together (each shown as `[a | b]` in the usage line).
+RUN_OPTIONS = {"--resume": None, "--only": "<name>", "--json": None}
+RUN_REPEATABLE = ("--only",)
+RUN_EXCLUSIVE = (("--resume", "--only"),)
+
+
+def run_usage():
+    """`run <parts.json> [...]`, built from RUN_OPTIONS."""
+    def word(f):
+        return f + (f" {RUN_OPTIONS[f]}" if RUN_OPTIONS[f] else "") + ("..." if f in RUN_REPEATABLE else "")
+    groups, seen = [], set()
+    for f in RUN_OPTIONS:
+        if f not in seen:
+            group = next((g for g in RUN_EXCLUSIVE if f in g), (f,))
+            seen |= set(group)
+            groups.append("[" + " | ".join(word(g) for g in group) + "]")
+    return " ".join(["run <parts.json>"] + groups)
+
+
+RUN_USAGE = run_usage()
+
+
+def usage_doc():
+    """`usage --json`: the commands, and run's options as data."""
+    return {"runner": "parts.py", "version": VERSION, "commands": sorted(COMMANDS),
+            "run": {"usage": "parts.py " + RUN_USAGE, "args": ["<parts.json>"],
+                    "options": [{"flag": f, "value": v, "repeatable": f in RUN_REPEATABLE}
+                                for f, v in RUN_OPTIONS.items()],
+                    "exclusive": [list(g) for g in RUN_EXCLUSIVE]}}
+
+
+def cmd_usage(args):
+    if args and args != ["--json"]:
+        print(f"parts: refused: usage takes only --json, not {' '.join(args)}", file=sys.stderr)
+        return 2
+    print(json.dumps(usage_doc(), indent=2) if args else USAGE)
+    return 0
 
 
 def options(rest):
@@ -578,7 +621,7 @@ def options(rest):
     flags, only, i = set(), [], 0
     while i < len(rest):
         a = rest[i]
-        if a in ("--resume", "--json"):
+        if a in RUN_OPTIONS and RUN_OPTIONS[a] is None:
             flags.add(a)
         elif a == "--only":
             if i + 1 >= len(rest) or rest[i + 1].startswith("--"):
@@ -747,7 +790,7 @@ def cmd_files(args):
 
 USAGE = __doc__.split("\n\n", 3)[3].split("\n\nTHE PARTS FILE", 1)[0]
 COMMANDS = {"run": (cmd_run, 1, 64), "validate": (cmd_validate, 1, 1), "files": (cmd_files, 2, 2),
-            "version": (lambda a: print(VERSION) or 0, 0, 0)}
+            "version": (lambda a: print(VERSION) or 0, 0, 0), "usage": (cmd_usage, 0, 1)}
 
 
 def main(argv):

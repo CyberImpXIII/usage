@@ -80,8 +80,14 @@ ledger_append() {
   for f in "$@"; do ledger_esc "$f"; row+=$'\t'"$LEDGER_E"; done
   [ "$now" != - ] || { ledger_fail "$ledger" "date gave no time" "$row"; return 1; }
   err=$(mkdir -p "${ledger%/*}" 2>&1) || { ledger_fail "$ledger" "${err:-mkdir failed}" "$row"; return 1; }
+  # The header, once: noclobber, so of two writers racing to create the file
+  # one wins and the other's failure is fine -- the file then exists. Any other
+  # failure (the ledger still absent, or a link to nowhere) is reported, and no
+  # row is appended to a ledger with no header.
   if [ ! -e "$ledger" ]; then
-    ( set -C; printf '%s\n' "$LEDGER_HEADER" > "$ledger" ) 2>/dev/null   # another writer may win the race
+    if ! err=$( ( set -C; printf '%s\n' "$LEDGER_HEADER" > "$ledger" ) 2>&1 ) && [ ! -f "$ledger" ]; then
+      ledger_fail "$ledger" "header: ${err:-failed}" "$row"; return 1
+    fi
   fi
   # One write per row, so concurrent agents do not interleave within a row.
   err=$( { printf '%s\n' "$row" >> "$ledger"; } 2>&1 ) && return 0
