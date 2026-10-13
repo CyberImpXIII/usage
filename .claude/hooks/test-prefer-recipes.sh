@@ -201,6 +201,24 @@ else
   standin 0 "a subdomain's recipe, parent url"    'https://parent-fixture.example/about'
   standin 0 "registered but not working"          'https://broken-fixture.example/jobs'
   standin 0 "suffix that is not a subdomain"      'https://notstored-www.example/jobs'
+  # robots.txt and .well-known/: read before scraping, never a recipe's page
+  standin 0 "robots.txt on a covered host"        'https://stored-caps.example/robots.txt'
+  standin 0 ".well-known on a covered host"       'https://www.stored-www.example/.well-known/security.txt'
+  standin 2 "...a robots-like path is still blocked" 'https://stored-caps.example/robots.txt.html'
+
+  # `covers v1`: site-scrapers' own answer wins over the host match, both ways
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[ "$1" = known ] && { cat "$(dirname "$0")/known.tsv"; exit 0; }' \
+    'if [ "$1" = covers ]; then echo "covers v1"; case "$2" in *only-this.example/search*) echo "only-this.example#listing:default" ;; esac; exit 0; fi' \
+    'exit 1' > "$SCRATCH/site-scrapers/dev.sh"
+  standin 0 "covers v1 says none: a host match no longer blocks" 'https://jobs.stored-www.example/x'
+  standin 2 "covers v1 names a recipe: blocked"                  'https://only-this.example/search?k=x'
+  standin 0 "covers v1, another path of that host: allowed"      'https://only-this.example/help/terms'
+  # no marker line: not an answer, so the host match still decides
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[ "$1" = known ] && { cat "$(dirname "$0")/known.tsv"; exit 0; }' \
+    'exit 0' > "$SCRATCH/site-scrapers/dev.sh"
+  standin 2 "covers exits 0 with no marker: host match blocks"  'https://jobs.stored-www.example/x'
 fi
 
 covered=$(pick "$PICK_COVERED")

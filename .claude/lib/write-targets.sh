@@ -49,6 +49,19 @@
 #               `git checkout <x>`, which is a branch or a path. Only
 #               store-guard.sh asks for it.
 #   patch_paths                   stdin: a diff; stdout: each path it names.
+#   bash_segments <command>       each simple command's WORDS, as the reader
+#                                 below splits them: words joined by \x1f,
+#                                 each segment ended by \x1e. Redirections and
+#                                 their operands are dropped; quotes are parsed
+#                                 (`echo "git commit"` is echo and one word);
+#                                 `$( )` and `( )` contents are segments of
+#                                 their own; a heredoc body or a `-c` string
+#                                 fed to a shell (bash, sh, zsh, dash, ksh) is
+#                                 read as commands too, 3 deep. VAR=x prefixes
+#                                 and sudo/env are kept: the caller skips them.
+#                                 A string inside double quotes (`"$(git x)"`),
+#                                 eval, xargs and an alias are not seen.
+#                                 git-funnel.sh reads git verbs with it.
 #
 # bash_write_targets IS HEURISTIC, and every caller's header must say so. It
 # catches redirection (`>`, `>>`, `>|`, `N>`, `&>`, `>&file`, glued or spaced;
@@ -375,6 +388,52 @@ _wt_bash_write_targets() {
   case " ${3:-} " in *" sqlite "*) _WT_SQLITE=1 ;; esac
   case " ${3:-} " in *" indirect "*) _WT_IND=1 ;; esac
   _wt_run "${1:-}" "${2:-${PWD:-/}}" 0
+  return 0
+}
+
+# ------------------------------------------------------------ the segments --
+bash_segments() { _wt_noglob _wt_segments "${1:-}" 0; return 0; }
+_wt_segments() {
+  local t pending=0 words=() bodies=() b x j n line shell cstr
+  _wt_lex "$1"
+  local toks=("${_WT_TOK[@]}")
+  for t in "${toks[@]}"; do
+    case "${t:0:1}" in
+      W) if [ $pending = 1 ]; then pending=0; else words+=("${t:1}"); fi ;;
+      O|I|J) pending=1 ;;
+      H) bodies+=("${t:1}") ;;
+      S) pending=0
+         if [ ${#words[@]} -gt 0 ]; then
+           line=""
+           for x in "${words[@]}"; do line+=$x$'\x1f'; done
+           printf '%s\x1e' "${line%$'\x1f'}"
+           # a shell fed a heredoc or a -c string: its text is commands too
+           shell=""; cstr=""; n=${#words[@]}; j=0
+           while [ $j -lt "$n" ]; do
+             x=${words[$j]}; j=$((j+1))
+             case "$x" in
+               sudo|command|env|nohup|time|exec|builtin|[A-Za-z_]*=*) continue ;;
+             esac
+             case "${x##*/}" in bash|sh|zsh|dash|ksh) shell=1 ;; esac
+             break
+           done
+           if [ -n "$shell" ] && [ "$2" -lt 3 ]; then
+             while [ $j -lt "$n" ]; do
+               x=${words[$j]}; j=$((j+1))
+               case "$x" in
+                 --*) ;;
+                 -*c*) [ $j -lt "$n" ] && cstr=${words[$j]}; break ;;
+                 -*) ;;
+                 *) break ;;
+               esac
+             done
+             [ -n "$cstr" ] && _wt_segments "$cstr" $(($2 + 1))
+             for b in ${bodies[@]+"${bodies[@]}"}; do _wt_segments "$b" $(($2 + 1)); done
+           fi
+         fi
+         words=(); bodies=() ;;
+    esac
+  done
   return 0
 }
 

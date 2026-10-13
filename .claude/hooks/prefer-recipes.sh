@@ -108,6 +108,28 @@ if [ -f "$marker" ]; then
   esac
 fi
 
+# A site's robots.txt and .well-known/ files are what a recipe author reads
+# BEFORE scraping (terms, rate limits): never a page a recipe returns, so never
+# refused (site-scrapers' report, 2026-10-13: usajobs.gov/robots.txt was).
+path=$(printf '%s' "$url" | sed -nE 's#^[Hh][Tt][Tt][Pp][Ss]?://[^/?#]+([^?#]*).*#\1#p')
+case "$path" in /robots.txt|/.well-known/*) exit 0 ;; esac
+
+# site-scrapers is the authority on what its recipes cover: when its dev.sh
+# answers `covers <url>` with exit 0 and a FIRST LINE of exactly `covers v1`,
+# the lines after it (one working recipe target each; none when no recipe
+# covers THIS url -- the recipe's own template host and, for a {{url}}
+# template, its subdomains) are the whole decision. Anything else (no such
+# subcommand yet: usage and exit 1; a dev.sh that exits 0 on any word) falls
+# back to the host match below, which blocks a covered host and every
+# subdomain whatever the path (site-scrapers' report, 2026-10-13:
+# developer.usajobs.gov was). The marker line is what keeps "no answer" from
+# being read as "covers nothing".
+covers=$("$REPO/dev.sh" covers "$url" 2>/dev/null) && cov_ok=1 || cov_ok=0
+if [ $cov_ok = 1 ] && [ "${covers%%$'\n'*}" = "covers v1" ]; then
+  case "$covers" in *$'\n'*) working=${covers#*$'\n'} ;; *) working="" ;; esac
+  working=$(printf '%s\n' "$working" | grep -v '^[[:space:]]*$')
+  [ -n "$working" ] || exit 0
+else
 known=$("$REPO/dev.sh" known "$host" 2>/dev/null) || exit 0
 [ -n "$known" ] || exit 0
 
@@ -134,6 +156,7 @@ working=$(printf '%s' "$known" | awk -F'\t' -v h="$host" '
   rh == h || substr(h, length(h) - length(rh)) == "." rh { print $1 }
 ')
 [ -n "$working" ] || exit 0
+fi
 
 {
   echo "BLOCKED: site-scrapers already has a working recipe for ${host}."
