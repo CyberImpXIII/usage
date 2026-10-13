@@ -30,7 +30,7 @@ HELP = """\
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
   usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
   usage calibrate                proposes thresholds from the hits so far; never applies them
-  usage check [--json]           the gates (devtools/check.py; the same as ./dev.sh check)
+  usage check [--json] [--resume]   ./dev.sh check: every part of check.parts.json, through devtools/parts.py
   usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE) and its cli.json (the store hook's
                                  gate: a hand write to a ledger is refused); the reporters write nothing without the folder
   usage registrations [--export [FILE]]   the status line and three hook registrations, as JSON; --export copies FILE
@@ -215,7 +215,7 @@ def cmd_calibrate(args):
 
 
 def cmd_check(args):
-    return subprocess.call([sys.executable, str(config.TOOL / "devtools" / "check.py"), *args])
+    return subprocess.call([str(config.TOOL / "dev.sh"), "check", *args])
 
 
 def cmd_failures(args):

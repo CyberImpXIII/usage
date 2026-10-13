@@ -6,3 +6,4 @@
 __pycache__/
 registry.proposed.json
 .claude/state/
+.progress/

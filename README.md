@@ -29,7 +29,7 @@ repo. No script runs a model: the cost is a few milliseconds of Python per event
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
   usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
   usage calibrate                proposes thresholds from the hits so far; never applies them
-  usage check [--json]           the gates (devtools/check.py; the same as ./dev.sh check)
+  usage check [--json] [--resume]   ./dev.sh check: every part of check.parts.json, through devtools/parts.py
   usage init                     create the store folder (~/.claude/usage/, or $USAGE_STORE) and its cli.json (the store hook's
                                  gate: a hand write to a ledger is refused); the reporters write nothing without the folder
   usage registrations [--export [FILE]]   the status line and three hook registrations, as JSON; --export copies FILE
@@ -197,7 +197,20 @@ below `hold` with a fresh sample, floored, minus `calibrate_margin`, and keeps
 
 ## Checks
 
-`./dev.sh check [--json] [GATE...]`: `test` (the suite), `files` (scripts present,
+`./dev.sh check [--json] [--resume | --only <part>...]` runs the parts of
+`check.parts.json` through `devtools/parts.py`, the shared runner setup's
+`parts` component renders from tools/checks (1.1.0): one `test.<module>` part
+per `tests/test_*.py`, then one part per gate of `devtools/check.py`. Each part
+has its own timeout and log (`.progress/check.json.logs/`, gitignored), the run
+ends `check: N of M passed; failed: <part> ...`, and `--resume` re-runs only the
+parts whose declared files changed since they passed (a part reading a sibling
+repo or the workspace says `always` and always runs). `./dev.sh test <part>...`
+runs just those parts and records them for a later `--resume`; `./dev.sh test`
+alone runs the suite at once. A gate that did not run at all exits 3, so its
+part is red, never ok. `tests/test_parts.py` holds the parts to the test
+modules and the gates, both ways.
+
+The gates (`python3 devtools/check.py [--json] [GATE...]`): `files` (scripts present,
 executable, parse), `hooks` (the shared hook copies pass their tests), `guard`
 (`tests/test_gated.py`'s `StoreGuard`: the installed store hook refuses a write
 to the store `usage init` gated; UNCHECKED while `.claude/hooks/store-guard.sh`

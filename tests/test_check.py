@@ -1,27 +1,31 @@
-"""The check itself: its --json keeps the schema's rules (the full validator is
-tools/checks' `checks one check-json`, an audit-role run), and a red gate is
-red. Runs the cheap gates only; the suite would run inside itself otherwise."""
+"""The gates (devtools/check.py): its --json keeps the schema's rules (the full
+validator is tools/checks' `checks one check-json`, an audit-role run), a red
+gate is red, and a gate that did not run exits 3 (the parts runner knows only
+exit codes, so that part is red, never ok). The runner itself and the parts
+file are tests/test_parts.py's."""
 import json
-import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from tests.helpers import ROOT
 
+IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".progress")
+
 
 def run_check(root, *gates):
-    env = dict(os.environ, USAGE_CHECK_NESTED="1")
-    r = subprocess.run([str(root / "dev.sh"), "check", "--json", *gates], capture_output=True, text=True,
-                       env=env, timeout=300)
+    r = subprocess.run([sys.executable, str(root / "devtools" / "check.py"), "--json", *gates],
+                       capture_output=True, text=True, timeout=300)
     return r.returncode, json.loads(r.stdout)
 
 
 class CheckJson(unittest.TestCase):
     def rules(self, code, doc):
-        self.assertEqual(code == 0, doc["ok"])
+        unrun = [c for c in doc["checks"] if c["status"] == "unchecked" and ":" not in c["name"]]
+        self.assertEqual(code, 1 if not doc["ok"] else 3 if unrun else 0)
         self.assertEqual(doc["ok"], not any(c["status"] in ("fail", "error") for c in doc["checks"]))
         names = [c["name"] for c in doc["checks"]]
         self.assertEqual(len(names), len(set(names)))
@@ -39,15 +43,16 @@ class CheckJson(unittest.TestCase):
                     self.assertTrue(f["file"])
 
     def test_green_gates_in_the_schema(self):
-        code, doc = run_check(ROOT, "files", "test")
+        code, doc = run_check(ROOT, "files")
         self.rules(code, doc)
-        self.assertEqual([c["status"] for c in doc["checks"]], ["ok", "unchecked"])
+        self.assertEqual([(c["name"], c["status"]) for c in doc["checks"]], [("files", "ok")])
+        self.assertEqual(code, 0)
 
     def test_a_planted_fault_is_red_and_named(self):
         tmp = Path(tempfile.mkdtemp(prefix="usage-check-"))
         try:
             copy = tmp / "usage"
-            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, copy, ignore=IGNORE)
             (copy / "usage-stop.sh").chmod(0o644)
             (copy / "usagelib" / "calc.py").write_text("def broken(:\n")
             code, doc = run_check(copy, "files")
@@ -59,17 +64,23 @@ class CheckJson(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_an_absent_sibling_is_unchecked_not_ok(self):
+    def test_an_absent_sibling_is_unchecked_and_exits_3(self):
         tmp = Path(tempfile.mkdtemp(prefix="usage-check-"))
         try:
             copy = tmp / "usage"
-            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            shutil.copytree(ROOT, copy, ignore=IGNORE)
             code, doc = run_check(copy, "shared")
             self.rules(code, doc)
             self.assertEqual([(c["name"], c["status"]) for c in doc["checks"]], [("shared", "unchecked")])
+            self.assertEqual(code, 3)
+            r = subprocess.run([sys.executable, str(copy / "devtools" / "check.py"), "shared"],
+                               capture_output=True, text=True, timeout=300)
+            self.assertEqual(r.returncode, 3)
+            self.assertIn("check: UNCHECKED (did not run: shared)", r.stdout)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_an_unknown_gate_is_a_usage_error(self):
-        r = subprocess.run([str(ROOT / "dev.sh"), "check", "nope"], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, str(ROOT / "devtools" / "check.py"), "nope"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
+        self.assertIn("unknown gate", r.stderr)

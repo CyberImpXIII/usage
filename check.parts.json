@@ -1,0 +1,29 @@
+{
+ "_comment": "This repo's `./dev.sh check`, in parts, run by devtools/parts.py (setup's `parts` component renders it from tools/checks' runner; its header is the format). Every part reads the whole repo ('.'); a test part does not read the other test modules or TODO.md. A part whose result depends on what no files list can name (a sibling tool, the workspace top, its recipes) says `always` and is never skipped by --resume. tests/test_parts.py holds this file to the test modules (one part per tests/test_*.py) and to devtools/check.py's gates (one part each), both ways.",
+ "defaults": {"files": ["."], "timeout_s": 900, "role": "tests"},
+ "parts": [
+  {"name": "test.check", "run": "python3 -m unittest tests.test_check", "files": ["tests/test_check.py"], "except": ["tests/test_*.py", "TODO.md"]},
+  {"name": "test.config", "run": "python3 -m unittest tests.test_config", "files": ["tests/test_config.py"], "except": ["tests/test_*.py", "TODO.md"]},
+  {"name": "test.datarepo", "run": "python3 -m unittest tests.test_datarepo", "files": ["tests/test_datarepo.py"], "except": ["tests/test_*.py", "TODO.md"],
+   "always": "runs tools/checks' stores-exported, a sibling repo"},
+  {"name": "test.direction", "run": "python3 -m unittest tests.test_direction", "files": ["tests/test_direction.py"], "except": ["tests/test_*.py", "TODO.md"],
+   "always": "runs tools/checks' no-roster, a sibling repo"},
+  {"name": "test.docs", "run": "python3 -m unittest tests.test_docs", "files": ["tests/test_docs.py"], "except": ["tests/test_*.py", "TODO.md"],
+   "always": "reads PLAN-usage-reporting.md at the workspace top"},
+  {"name": "test.export", "run": "python3 -m unittest tests.test_export", "files": ["tests/test_export.py"], "except": ["tests/test_*.py", "TODO.md"]},
+  {"name": "test.gate_todo", "run": "python3 -m unittest tests.test_gate_todo", "files": ["tests/test_gate_todo.py"], "except": ["tests/test_*.py", "TODO.md"],
+   "always": "runs the real tools/todo CLI and reads its vocab.json, a sibling repo"},
+  {"name": "test.gated", "run": "python3 -m unittest tests.test_gated", "files": ["tests/test_gated.py"], "except": ["tests/test_*.py", "TODO.md"]},
+  {"name": "test.parts", "run": "python3 -m unittest tests.test_parts", "files": ["tests/test_parts.py"], "except": ["tests/test_*.py", "TODO.md"]},
+  {"name": "test.questions", "run": "python3 -m unittest tests.test_questions", "files": ["tests/test_questions.py"], "except": ["tests/test_*.py", "TODO.md"],
+   "always": "runs the workspace's hits reader (outside this repo) against this CLI"},
+  {"name": "test.reporters", "run": "python3 -m unittest tests.test_reporters", "files": ["tests/test_reporters.py"], "except": ["tests/test_*.py", "TODO.md"]},
+  {"name": "test.settings", "run": "python3 -m unittest tests.test_settings", "files": ["tests/test_settings.py"], "except": ["tests/test_*.py", "TODO.md"]},
+  {"name": "files", "run": "python3 devtools/check.py files", "role": "code"},
+  {"name": "hooks", "run": "python3 devtools/check.py hooks", "role": "audit", "timeout_s": 2400,
+   "always": "test-prefer-recipes.sh and test-troubleshooting.sh read the workspace's recipes"},
+  {"name": "guard", "run": "python3 devtools/check.py guard"},
+  {"name": "shared", "run": "python3 devtools/check.py shared", "role": "audit",
+   "always": "`checks run .` reads tools/hooks, the workspace top and the user's settings"}
+ ]
+}

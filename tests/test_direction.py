@@ -36,7 +36,7 @@ class Direction(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="usage-direction-"))
         try:
             copy = tmp / "tools" / "usage"
-            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "tests", "__pycache__"))
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "tests", "__pycache__", ".progress"))
             (copy / "usagelib" / "planted.py").write_text(f'ROSTER = "{PLANT}"\n')
             status, lines = one(copy, "--root", str(tmp))
             self.assertEqual(status, "fail", lines)
@@ -48,7 +48,7 @@ class Direction(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="usage-direction-"))
         try:
             copy = tmp / "tools" / "usage"
-            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "tests", "__pycache__"))
+            shutil.copytree(ROOT, copy, ignore=shutil.ignore_patterns(".git", "tests", "__pycache__", ".progress"))
             (copy / "usagelib" / "planted.py").write_text('AGENT = "agent-zed"\n')
             status, lines = one(copy, "--root", str(tmp), "--names", "agent-zed,agent-yod")
             self.assertEqual(status, "fail", lines)

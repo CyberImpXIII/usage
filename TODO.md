@@ -7,12 +7,25 @@
   `~/.claude/settings.json.proposed`, never the live file), review it, copy it
   over `~/.claude/settings.json`, then `./usage init`. Until then `status` and
   `gate` answer "no sample", and `gate` holds.
-- **Setup's other outputs wait on Jacob** (same run): `.claude/settings.json`
-  lacks 12 registrations; the proposal is `.claude/settings.proposed.json`
-  (gitignored), applied by `cp` over settings.json, Jacob's step. `.githooks/`
-  is installed but inert: `core.hooksPath` unset, and setting it before
-  `./dev.sh` runs `.githooks/check-pass record` would make the pre-commit
-  refuse every commit (setup's `githooks needs-jacob` line).
+- **`.githooks/` is installed but inert**: `core.hooksPath` unset, and setting
+  it before `./dev.sh check` runs `.githooks/check-pass record` would make the
+  pre-commit refuse every commit (setup's `githooks needs-jacob` line). The
+  parts runner (Q7) records nothing for check-pass yet; wiring it is setup's
+  githooks component plus a `record` step here, not done. (The settings half
+  is done: `.claude/settings.json` == setup's proposal, committed eed5a47, Q6b.)
+- **`./dev.sh check` runs in parts (Q7, 2026-10-13)** through devtools/parts.py
+  (setup's render of tools/checks' runner, 1.1.0, byte-equal; test_parts
+  `RunnerCopy` goes red when checks moves on: `setup tools/usage --only parts
+  --rebuild`). Decision taken: a gate that did not run at all (guard with no
+  hook, shared with no tools/checks) exits 3 from devtools/check.py, so its
+  part is RED, where the old one-process check printed UNCHECKED and passed.
+  The runner knows only exit codes; ok would be a wrong answer. Consequence: a
+  lone clone's check is red until tools/checks is beside it. A shared check
+  UNCHECKED on its own (repro, stores-exported, ...) still passes, as before.
+  Lost: `--json` now has one `shared` entry, not one per shared check (the
+  names are in its log, `.progress/check.json.logs/shared.log`).
+- **TODO import skipped (Q7, 2026-10-13)**: this TODO.md was not imported into
+  the todo store: todo's importer is being fixed (dispatcher's brief).
 - **`state/` grows with each transcript** (one file per transcript, a per-message
   map inside). Nothing prunes it. Harmless at our volume; a `usage prune` is the
   fix if it ever matters.
@@ -143,13 +156,9 @@
 
 ## Reported to other owners
 
-- **setup / hooks, 2026-10-09 (via the dispatcher): `./dev.sh check` FAILs
-  `shared:hooks-installed`** with drift in `.claude/lib/extra-stores.sh`,
-  `.claude/hooks/store-guard.sh`, `test-store-guard.sh`,
-  `test-no-inline-blobs.sh`: tools/hooks moved on (b7a8c6b, ec06599) after
-  this repo's re-render at eb09868 (5954975). The re-render is setup's;
-  not copied by hand here. Also an uncommitted `.claude/settings.json` (not
-  ours, same diff shape in tools/hooks, setup, checks): left untouched.
+- **setup / hooks, 2026-10-09: hook-copy drift** -- settled 2026-10-13 (Q6b):
+  setup's re-render committed c368cf1; `hooks copies --gate tools/usage` ok,
+  25 of 25 agree in meaning; shared:hooks-installed ok.
 - **todo, 2026-10-09 (via the dispatcher): no CLI prints the size
   vocabulary**, so `VocabSeam` (size_tokens == todo's `ready` sizes) reads
   tools/todo/vocab.json directly, read only. A `todo vocab sizes --json`

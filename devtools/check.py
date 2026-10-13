@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""This repo's gates: `./dev.sh check [--json] [GATE...]` and `usage check`.
+"""This repo's gates, one part each of check.parts.json: `python3 devtools/check.py
+[--json] [GATE...]`. `./dev.sh check` (and `usage check`) runs them, after the
+test modules (the §4 gates of PLAN-usage-reporting.md), through the shared
+runner devtools/parts.py.
 
-  test    the unittest suite (tests/), the §4 gates of PLAN-usage-reporting.md
   files   every script the registrations and the CLI need: present, executable,
-          parses; usage.json, cli.json and checks.json parse
+          parses; usage.json, cli.json, checks.json and check.parts.json parse
   hooks   the shared hook copies in .claude/hooks/ pass their own tests
   guard   the store hook (.claude/hooks/store-guard.sh, or $USAGE_STORE_GUARD)
           refuses a hand write to a store `usage init` gated
@@ -14,9 +16,12 @@
           (CHECKS_ROSTER_NAMES), never from here.
 
 Text by default; --json prints the one schema (tools/checks'
-schema/check-json.schema.json): exit 0 iff ok, ok false iff a check is fail or
-error. USAGE_CHECK_NESTED=1 (set for the suite) skips the `test` gate, so a
-test that runs this file does not run the suite inside itself.
+schema/check-json.schema.json), ok false iff a check is fail or error. Exit 1
+when not ok; else 3 when a gate named (or, with none named, any gate) did not
+run at all (its one result is UNCHECKED: guard with no hook, shared with no
+tools/checks), so the runner, which knows only exit codes, reports that part
+red, never ok; else 0. A shared check that is UNCHECKED on its own (it does not
+apply here) is a line of the shared gate, not the gate unrun: exit 0.
 """
 import json
 import os
@@ -30,7 +35,7 @@ CHECKS = ROOT.parent / "checks" / "checks"
 EXECUTABLES = ["usage", "usage-statusline.sh", "usage-stop.sh", "usage-failure.sh", "usagelib/hook.py",
                "dev.sh", "devtools/check.py"]
 UNITTEST = re.compile(r"^(FAIL|ERROR): (\S+) \(([\w.]+)\)")
-NESTED = "USAGE_CHECK_NESTED"
+UNRUN = 3
 
 
 def result(name, failures=(), reason=None, status=None):
@@ -44,38 +49,6 @@ def result(name, failures=(), reason=None, status=None):
 
 def failure(message, file=None, line=None, role="code"):
     return {"message": message, "file": file, "line": line if file else None, "role": role}
-
-
-def _module_file(dotted):
-    parts = dotted.split(".")
-    for i in range(len(parts), 0, -1):
-        rel = "/".join(parts[:i]) + ".py"
-        if (ROOT / rel).is_file():
-            return rel
-    return None
-
-
-def gate_test():
-    if os.environ.get(NESTED):
-        return result("test", status="unchecked", reason=f"nested run ({NESTED} set): the suite is already running")
-    env = dict(os.environ, **{NESTED: "1"})
-    r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."],
-                       cwd=ROOT, capture_output=True, text=True, env=env)
-    found = []
-    for ln in r.stderr.splitlines():
-        m = UNITTEST.match(ln)
-        if m:
-            found.append(failure(f"{m.group(1)}: {m.group(2)} ({m.group(3)})", _module_file(m.group(3)), role="tests"))
-    if r.returncode != 0 and not found:
-        tail = " / ".join(r.stderr.strip().splitlines()[-3:]) or f"exit {r.returncode}"
-        found.append(failure(f"the suite failed with no FAIL/ERROR line: {tail}; re-run "
-                             f"python3 -m unittest discover -s tests -t . -v", role="tests"))
-    if r.returncode == 0 and found:  # cannot happen; never let it read as green
-        found.append(failure("unittest exited 0 while printing FAIL/ERROR lines", role="tests"))
-    res = result("test", found)
-    m = re.search(r"^Ran (\d+) tests?", r.stderr, re.M)
-    res["_note"] = (m.group(0) if m else "Ran ? tests") + (", " + r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "")
-    return res
 
 
 def gate_files():
@@ -95,7 +68,7 @@ def gate_files():
             compile(p.read_text(), str(p), "exec")
         except SyntaxError as e:
             found.append(failure(f"does not compile: {e.msg}", str(p.relative_to(ROOT)), e.lineno))
-    for name in ("usage.json", "cli.json", "checks.json"):
+    for name in ("usage.json", "cli.json", "checks.json", "check.parts.json"):
         try:
             json.loads((ROOT / name).read_text())
         except (OSError, ValueError) as e:
@@ -183,7 +156,7 @@ def gate_shared():
     return out
 
 
-GATES = {"test": gate_test, "files": gate_files, "hooks": gate_hooks, "guard": gate_guard, "shared": gate_shared}
+GATES = {"files": gate_files, "hooks": gate_hooks, "guard": gate_guard, "shared": gate_shared}
 
 
 def main(argv):
@@ -198,6 +171,7 @@ def main(argv):
         r = GATES[n]()
         checks.extend(r if isinstance(r, list) else [r])
     ok = not any(c["status"] in ("fail", "error") for c in checks)
+    unrun = [c["name"] for c in checks if c["status"] == "unchecked" and c["name"] in GATES]
     if as_json:
         for c in checks:
             c.pop("_note", None)
@@ -210,8 +184,8 @@ def main(argv):
             for f in c["failures"]:
                 at = f"{f['file']}:{f['line'] or ''}" if f["file"] else ""
                 print(f"  FAIL {at} {f['message']}".rstrip())
-        print("check: " + ("ok" if ok else "FAILED"))
-    return 0 if ok else 1
+        print("check: " + ("FAILED" if not ok else f"UNCHECKED (did not run: {', '.join(unrun)})" if unrun else "ok"))
+    return 1 if not ok else UNRUN if unrun else 0
 
 
 if __name__ == "__main__":

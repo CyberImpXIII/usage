@@ -7,7 +7,8 @@ resets? Built from PLAN-usage-reporting.md phase 1. `README.md` has the design.
 
 | doing this | use |
 |---|---|
-| before committing | `./dev.sh check` (test, files, hooks, guard, shared; `--json` for the one schema) |
+| before committing | `./dev.sh check` (check.parts.json: a part per test module, then files, hooks, guard, shared; `--resume` after a fix; `--json` for the one schema) |
+| one part | `./dev.sh test <part>` (e.g. `test.gated`, `guard`) |
 | what the CLI does | `./usage --help` (README.md holds the same block, tested) |
 | what is open | `TODO.md` |
 
