@@ -1,7 +1,8 @@
 {
   "store": ["~/.claude/usage/samples.tsv", "~/.claude/usage/tokens.tsv", "~/.claude/usage/hits.tsv",
-            "~/.claude/usage/limits.json", "~/.claude/usage/failures.tsv", "~/.claude/usage/state/*"],
+            "~/.claude/usage/limits.json", "~/.claude/usage/failures.tsv", "~/.claude/usage/models.json",
+            "~/.claude/usage/state/*"],
   "cli": "usage",
-  "verbs": ["status", "burn", "project", "gate", "hits", "failures", "tokens", "calibrate", "check", "init",
+  "verbs": ["status", "burn", "project", "gate", "can-run", "hits", "failures", "tokens", "calibrate", "check", "init",
             "registrations", "export", "import", "verify"]
 }

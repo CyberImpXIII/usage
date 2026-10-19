@@ -6,13 +6,15 @@ PLAN-usage-reporting.md (phase 1); the thresholds are its §8, approved
 2026-10-05.
 
 Three small scripts write, one CLI reads, and the store lives outside every
-repo. No script runs a model: the cost is a few milliseconds of Python per event.
+repo. No reporter runs a model: the cost is a few milliseconds of Python per
+event. (`usage can-run`'s probe does, at most once per model per TTL, and
+only after your `--set <model> ok`.)
 
 | script | registered as | writes |
 |---|---|---|
 | `usage-statusline.sh [command]` | the status line | `limits.json` (the latest sample and the raw `rate_limits` object) and a row in `samples.tsv` when a value changes or every `sample_heartbeat_minutes`; prints `5h 42% (resets 14:05) \| 7d 18% (resets Mon 09:00)`, with ` warn` / ` HOLD` past a threshold. Given a command, runs it on the same input and keeps its output in front of ours. |
 | `usage-stop.sh` | `Stop`, `SubagentStop` | one row per model in `tokens.tsv`: the turn's delta since the last run for that transcript (SubagentStop reads `agent_transcript_path`) |
-| `usage-failure.sh` | `StopFailure`, matcher `rate_limit` | one row in `hits.tsv` with the last sample before it; any other error writes nothing |
+| `usage-failure.sh` | `StopFailure`, matcher `rate_limit` | one row in `hits.tsv` with the last sample before it, and a `hold` on the session's model in `models.json` (see can-run); any other error writes nothing |
 
 ## Commands
 
@@ -24,6 +26,12 @@ repo. No script runs a model: the cost is a few milliseconds of Python per event
                                  exit 1 with "hold until <time>" otherwise. The hub's question.
                                  --todo <id>: <tokens> is the todo item's size (usage.json size_tokens, via `todo get`);
                                  exit 3, unchecked and no number, when it is unsized, L or unreadable
+  usage can-run <model> [--no-probe]   may this account run <model> now (PLAN-routing-tree.md §16): ok (exit 0);
+                                 hold <until>, credits or refused (exit 1); unknown (exit 3). From models.json in the store,
+                                 no record older than usage.json probes.model_ttl_hours used. ok needs your fresh --set ok
+                                 and a reply to one `claude -p --model <model>` probe, run only then (--no-probe: unknown
+                                 instead). A rate-limit hit in a session on <model> holds it until the reset the error names.
+                                 --set <model> ok|no "<reason>": your own answer, dated now, used for the same TTL
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
@@ -75,6 +83,48 @@ stub for the failure paths.
 Weighting by model is not applied: a token of any model counts the same toward
 the ratio (TODO.md).
 
+## can-run
+
+`usage can-run <model>` is the condition `fable` of PLAN-routing-tree.md §16:
+the roles that prefer `claude-fable-5-1` take it only on `ok`, and every other
+answer resolves to their fallback. It answers from `models.json`, at most one
+record per model per source; a writer replaces only its own source's record
+(`usagelib/models.py` holds the rules):
+
+| source | writes | when |
+|---|---|---|
+| `set` | `ok` or `refused` (`no`), with the reason | `can-run --set <model> ok\|no "<reason>"` |
+| `probe` | one `claude -p --model <model> --max-turns 1 --output-format stream-json --verbose ok`, run in the store folder, read as: `reply` (exit 0, a non-error result, every assistant message from `<model>`: a fallback model answering is no reply); `credits` ("spend limit"); `refused` ("issue with the selected model"); `hold` (a reset time); else `refused`, marked unverified; with the exit code, the models that answered and the text | only when a fresh `set ok` exists and no fresh probe. A probe that cannot run (no CLI, past `probes.probe_timeout_s`) records nothing and answers `unknown` |
+| `hit` | `hold`, `until` the reset the error text names, or null | the StopFailure reporter, on `rate_limit`, for the model of the transcript's last assistant message |
+
+- **Why a reply alone is not `ok`** (research rs-6, from the docs): under
+  `claude -p`, a plan that bills Fable to usage credits bills it without asking
+  and replies normally, so a reply means ok *or* credits, and each probe there
+  spends credits. So `ok` needs your fresh `--set <model> ok` (the plan
+  includes it) and a fresh probe reply (it is available now), and without the
+  first no probe runs: the answer is `unknown`, exit 3, saying so.
+- **The answer**, the most cautious fresh record winning: `hold` (any source),
+  else `refused` (`set no`, or the probe's), else `credits`, else `ok`, else
+  `unknown`.
+- **The TTL**: a record is used only while younger than usage.json
+  `probes.model_ttl_hours` (24), whoever wrote it, so a hand edit to an old
+  `ok` is not trusted. A hold lasts until its `until` (at most 8 days after the
+  hit, else it is a misread and not used), or, with none, for the TTL. A record
+  dated in the future, or misshapen, is not used.
+- **The reset time**: `...|<epoch>`, `resets 2026-10-20 00:00 UTC`, or Claude
+  Code's own `resets 3:45pm` / `resets Mon 12:00am` (errors#youve-hit-your-session-limit),
+  read as the next such clock time after the hit, in the zone named in
+  parentheses or else the local one; a zone it does not know gives no time.
+  The StopFailure input names no model (hooks#common-input-fields), hence the
+  transcript.
+- **`<model>` is a full id** (`claude-...`), never an alias: the reply is
+  matched by prefix (a real probe of `claude-haiku-4-5`, 2026-10-19, answered
+  as `claude-haiku-4-5-20251001`), and `fable` is no prefix of `claude-fable-5-1`.
+- **Unverified**: the probe texts are the docs' (rs-6); the exit code and
+  stream of each refusal are undocumented and unrun.
+- `tests/test_canrun.py` holds each rule with its counterfactual, with a stub
+  CLI (`$USAGE_CLAUDE_CLI`) in place of `claude`.
+
 ## The store
 
 `~/.claude/usage/` (`$USAGE_STORE` overrides it; the tests use that). Created
@@ -87,6 +137,7 @@ tool is inert until someone sets it up.
 | `tokens.tsv` | `time`, `session`, `agent_type` (from the hook input, empty on the main thread), `model`, `input`, `output`, `cache_read`, `cache_write`, `basis`: `turn`, or `backlog` for messages older than `sample_stale_minutes` when first read (a transcript first seen mid-session), which never count toward a ratio |
 | `hits.tsv` | `time`, `session`, `agent_type`, `five_hour_pct`, `seven_day_pct`, `sample_time` (when that sample was taken), `five_hour_resets_at`, `seven_day_resets_at` (that sample's) |
 | `limits.json` | the latest sample, when it was taken, and the raw `rate_limits` object whole |
+| `models.json` | `usage can-run`'s records, `{model: {source: record}}`: `model`, `checked_at`, `result`, `evidence`, `source`, and `until` for a hold (see can-run) |
 | `state/` | one file per transcript: the byte offset read so far and each message's counted usage |
 | `failures.tsv` | `time`, `reporter`, `event`, `error`: one line per write a reporter could not make (see Fails open) |
 | `cli.json` | the store's gate, written by `usage init`: every file above, the CLI (absolute path) and its verbs |
@@ -129,6 +180,7 @@ contract; in short:
 | `state/` | no | this machine's transcript offsets, keyed by local paths |
 | `.lock` | no | the write lock |
 | `failures.tsv` | no | this machine's failed reporter writes: a local fault, not history |
+| `models.json` | no | `can-run`'s records, each used for a day at most: a restored copy would be a stale answer |
 | `cli.json` | no | the store's gate, written by `usage init` with this machine's tool path |
 
 Every cell must fit its column's shape, and the free-text columns (session,

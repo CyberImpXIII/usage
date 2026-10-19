@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # StopFailure hook: on `error: rate_limit` only, appends one row to
 # ~/.claude/usage/hits.tsv with the last status-line sample before it
-# (usagelib/reporters.py, failure). Any other error writes nothing. Fails open:
+# (usagelib/reporters.py, failure), and holds the session's model in
+# models.json until the reset the error names (`usage can-run`,
+# usagelib/models.py). Any other error writes nothing. Fails open:
 # always exits 0 and prints nothing; a row it could not write is recorded in
 # failures.tsv (usagelib/hook.py; `usage failures`).
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || exit 0

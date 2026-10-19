@@ -7,14 +7,16 @@ line itself (NOT_RECORDED).
 
   statusline(data) -> the one-line status (str, may be empty)
   stop(data)       -> Stop / SubagentStop: tokens.tsv rows for the turn's delta
-  failure(data)    -> StopFailure: one hits.tsv row, only for error == rate_limit
+  failure(data)    -> StopFailure: one hits.tsv row, only for error == rate_limit,
+                      and a hold on the session's model in models.json until the
+                      reset the error names (models.hold_from_hit, §16)
 """
 import hashlib
 import json
 import time
 from pathlib import Path
 
-from . import config, store
+from . import config, models, store
 
 WINDOWS = (("5h", "five_hour"), ("7d", "seven_day"))
 RATE_LIMIT_ERROR = "rate_limit"
@@ -228,3 +230,6 @@ def failure(data):
             "five_hour_resets_at": sample.get("five_hour_resets_at"),
             "seven_day_resets_at": sample.get("seven_day_resets_at"),
         }])
+        # After the row, so a failure here (an unreadable transcript or
+        # models.json) costs the hold, never the hit; hook.py records it.
+        models.hold_from_hit(d, data, t)

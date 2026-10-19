@@ -28,6 +28,9 @@ class Case(unittest.TestCase):
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.now = None
+        # `usage can-run` probes with $USAGE_CLAUDE_CLI: no test ever runs the
+        # real `claude` (a model call); tests/test_canrun.py points it at a stub.
+        self.claude_cli = self.tmp / "no-claude-cli"
 
     def tearDown(self):
         for p in self.tmp.rglob("*"):
@@ -41,7 +44,8 @@ class Case(unittest.TestCase):
     def env(self, now=None, data=None):
         """The caller's DATA_REPO never reaches a test: only `data` (a scratch
         folder) is passed on, so no test can write into a real data repo."""
-        e = dict(os.environ, USAGE_STORE=str(self.store), HOME=str(self.home), TZ="UTC")
+        e = dict(os.environ, USAGE_STORE=str(self.store), HOME=str(self.home), TZ="UTC",
+                 USAGE_CLAUDE_CLI=str(self.claude_cli))
         e.pop("DATA_REPO", None)
         if data is not None:
             e["DATA_REPO"] = str(data)

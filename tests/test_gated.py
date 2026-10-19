@@ -63,11 +63,12 @@ class Contract(Case):
         t = self.tmp / "t.jsonl"
         shutil.copy(FIXTURES / "transcript" / "turn1.jsonl", t)
         self.script("stop", {"hook_event_name": "Stop", "transcript_path": str(t)}, now="2026-10-05T10:01:00Z")
-        self.script("failure", {"hook_event_name": "StopFailure", "error": "rate_limit"}, now="2026-10-05T10:02:00Z")
+        self.script("failure", {"hook_event_name": "StopFailure", "error": "rate_limit", "transcript_path": str(t)},
+                    now="2026-10-05T10:02:00Z")  # hits.tsv and a hold in models.json
         self.script("failure", "{cut", now="2026-10-05T10:03:00Z")  # a recorded failure
         written = [str(p.relative_to(self.store)) for p in self.store.rglob("*")
                    if p.is_file() and p.name not in (".lock", store.CONTRACT)]
-        for f in ("samples.tsv", "tokens.tsv", "hits.tsv", "limits.json", "failures.tsv"):
+        for f in ("samples.tsv", "tokens.tsv", "hits.tsv", "limits.json", "failures.tsv", "models.json"):
             self.assertIn(f, written, "the run did not write it, so this test proves nothing about it")
         self.assertTrue(any(w.startswith("state/") for w in written))
         unnamed = [w for w in written if not any(fnmatch(w, g) for g in store.STORE_FILES)]
@@ -92,7 +93,7 @@ class StoreGuard(Case):
                               env=dict(os.environ, HOME=str(self.home)), timeout=60)
 
     def test_a_hand_write_to_a_ledger_is_refused_only_once_gated(self):
-        targets = [self.store / n for n in ("hits.tsv", "tokens.tsv", "failures.tsv", "limits.json")]
+        targets = [self.store / n for n in ("hits.tsv", "tokens.tsv", "failures.tsv", "limits.json", "models.json")]
         targets.append(self.store / "state" / "0123.json")
         for t in targets:
             r = self.guard("Write", t)

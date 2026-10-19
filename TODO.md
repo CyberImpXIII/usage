@@ -59,6 +59,16 @@
 
 ## Open decisions
 
+- **Does `can-run --set` last only the 24h TTL? (2026-10-19, tl-355; ask
+  Jacob.)** §16 step 2 puts every record under `probes.model_ttl_hours`, so a
+  `--set claude-fable-5-1 ok` must be renewed daily or can-run answers
+  `unknown` (and probes nothing). A plan rarely changes daily; a separate
+  `set_ttl_hours` is one reviewed usage.json commit. Hinges on: Jacob.
+- **`ok` needs a fresh `--set ok` AND a probe reply (2026-10-19, research
+  rs-6).** A `claude -p` reply means ok or usage credits, so without the set no
+  probe runs. If Jacob wants can-run to answer `ok` with no set, it needs a
+  source that tells credits from included (none known). Hinges on: Jacob.
+
 - **`size_tokens` is a first value, not a measurement (2026-10-09, item 7).**
   usage.json `size_tokens` S 4,000,000, M 12,000,000 (input + output + cache
   read + cache write, the gate's sum) came from one session's totals (main opus
@@ -118,6 +128,27 @@
   mix.
 
 ## Unconfirmed suspicions
+
+- **can-run's refusal texts are the docs', never run (2026-10-19, rs-6).**
+  "issue with the selected model" -> refused, "spend limit" -> credits, a
+  reset time -> hold; their exit code and stream (stdout result vs stderr)
+  are undocumented, so both are read. Verified by a run: a haiku reply
+  (stream-json, `message.model` = `claude-haiku-4-5-20251001`, read `reply`).
+  Probe: one `usage can-run` on a plan without Fable, and one with credits
+  spent (Jacob's plan includes Fable, so neither can be run here).
+- **A first-turn hit may set no hold (unconfirmed).** The StopFailure input
+  names no model, so the hold reads the transcript's last claude assistant
+  message; if the transcript lags the failure, or the session's first request
+  is the one refused, there is none and only the hits row is written (no
+  failure traced: nothing failed). Probe: the next real `rate_limit` hit's
+  transcript tail vs `models.json`.
+- **Two concurrent `can-run` probes are not locked against each other**: each
+  runs its own `claude -p` and the later write wins. Benign (both are fresh),
+  costs one extra probe. A lock held across a 120 s call would block the hit
+  reporter, so none is taken.
+- **The probe timeout path (`probes.probe_timeout_s`) is untested**: holding it
+  needs a test-only override of usage.json; the no-CLI test covers the same
+  `unknown, nothing recorded` branch, not the timeout itself.
 
 - **The credential rule may refuse a real value (unconfirmed).** Export refuses
   any session/agent_type/model cell with a run of 20+ letters and digits (fails

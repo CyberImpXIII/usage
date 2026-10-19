@@ -21,6 +21,8 @@ default.
                           a local path; meaningless on another machine
              .lock        the write lock
              failures.tsv this machine's failed reporter writes (a local fault)
+             models.json  `usage can-run`'s records, each good for a day at
+                          most: a restored copy would be a stale answer
              cli.json     the store's gate, holding this machine's tool path
 
 Each exported ledger is written exactly as the tool reads it: header, then
@@ -69,6 +71,8 @@ CLASSES = {
     "state/": "this machine's transcript offsets, keyed by a hash of a local path",
     ".lock": "the write lock",
     store.FAILURES: "this machine's failed reporter writes: a local fault to fix here, not history",
+    store.MODELS: "`usage can-run`'s records, each used for probes.model_ttl_hours at most: a restored copy "
+                  "would be a stale answer",
     store.CONTRACT: "the store's gate, written by `usage init` with this machine's tool path",
 }
 LEDGERS = [n for n, c in CLASSES.items() if c == EXPORT]

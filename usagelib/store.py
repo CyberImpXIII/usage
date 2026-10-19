@@ -1,5 +1,6 @@
 """The store under ~/.claude/usage/: three append-only TSV ledgers, limits.json
-(the latest status-line sample), state/ (one offset file per transcript),
+(the latest status-line sample), models.json (`usage can-run`'s records,
+usagelib/models.py), state/ (one offset file per transcript),
 failures.tsv (the reporters' own failed writes) and cli.json (the store's gate,
 written by `usage init`).
 
@@ -33,6 +34,7 @@ COLUMNS = {
                  "five_hour_resets_at", "seven_day_resets_at"],
 }
 LIMITS = "limits.json"
+MODELS = "models.json"  # `usage can-run`'s records (usagelib/models.py)
 FAILURES = "failures.tsv"
 FAILURE_COLUMNS = ["time", "reporter", "event", "error"]
 FAILURES_MAX_BYTES = 256 * 1024  # past this, a failure is not recorded (the file already says it happens)
@@ -40,7 +42,7 @@ CONTRACT = "cli.json"
 # Every file the store's cli.json names: the store-guard hook refuses a hand
 # write to any of them. The repo's cli.json names the same list under
 # ~/.claude/usage/ (tests/test_gated.py holds the two equal).
-STORE_FILES = [*COLUMNS, LIMITS, FAILURES, "state/*"]
+STORE_FILES = [*COLUMNS, LIMITS, FAILURES, MODELS, "state/*"]
 
 
 class NoStore(Exception):

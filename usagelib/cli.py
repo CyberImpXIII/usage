@@ -15,7 +15,7 @@ import time
 
 from pathlib import Path
 
-from . import calc, config, datarepo, export, store, todo
+from . import calc, config, datarepo, export, models, store, todo
 
 HELP = """\
   usage status                   latest 5h and 7d %, resets, time since the sample
@@ -25,6 +25,12 @@ HELP = """\
                                  exit 1 with "hold until <time>" otherwise. The hub's question.
                                  --todo <id>: <tokens> is the todo item's size (usage.json size_tokens, via `todo get`);
                                  exit 3, unchecked and no number, when it is unsized, L or unreadable
+  usage can-run <model> [--no-probe]   may this account run <model> now (PLAN-routing-tree.md §16): ok (exit 0);
+                                 hold <until>, credits or refused (exit 1); unknown (exit 3). From models.json in the store,
+                                 no record older than usage.json probes.model_ttl_hours used. ok needs your fresh --set ok
+                                 and a reply to one `claude -p --model <model>` probe, run only then (--no-probe: unknown
+                                 instead). A rate-limit hit in a session on <model> holds it until the reset the error names.
+                                 --set <model> ok|no "<reason>": your own answer, dated now, used for the same TTL
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
@@ -162,7 +168,38 @@ def cmd_gate(args):
     return code
 
 
-HIT_JSON = ("t", "session", "resets_at", "window", "time", "agent_type", "five_hour_pct", "seven_day_pct",
+def cmd_can_run(args):
+    if args[:1] == ["--set"]:
+        if len(args) != 4 or args[2] not in ("ok", "no") or not args[3].strip():
+            return _usage_error('can-run --set <model> ok|no "<reason>" (the reason is required)')
+        model = _model_arg(args[1])
+        try:
+            rec, note = models.set_answer(model, args[2] == "ok", args[3].strip())
+        except store.NoStore:
+            print(f"not set: no store at {config.store_dir()} (usage init)")
+            return 1
+        print(f"set: {model} {rec['result']} at {rec['checked_at']}, good until "
+              f"{store.iso(store.epoch(rec['checked_at']) + models.ttl_s())}")
+        if note:
+            print(f"  {note}")
+        return 0
+    if not args or args[0].startswith("-") or args[1:] not in ([], ["--no-probe"]):
+        return _usage_error("can-run <model> [--no-probe], or can-run --set <model> ok|no \"<reason>\"")
+    model = _model_arg(args[0])
+    answer, until, detail = models.can_run(model, allow_probe=args[1:] != ["--no-probe"])
+    print(models.headline(answer, until))
+    for d in detail:
+        print(f"  {d}")
+    return models.EXIT[answer]
+
+
+def _model_arg(v):
+    if not models.MODEL_ID.match(v):
+        raise SystemExit(_usage_error(f"not a full model id (claude-..., never an alias): {v!r}"))
+    return v
+
+
+HIT_JSON = ("t","session", "resets_at", "window", "time", "agent_type", "five_hour_pct", "seven_day_pct",
             "sample_time", "flag")
 
 
@@ -350,7 +387,7 @@ def cmd_verify(args):
 
 
 COMMANDS = {
-    "status": cmd_status, "burn": cmd_burn, "project": cmd_project, "gate": cmd_gate,
+    "status": cmd_status, "burn": cmd_burn, "project": cmd_project, "gate": cmd_gate, "can-run": cmd_can_run,
     "hits": cmd_hits, "failures": cmd_failures, "tokens": cmd_tokens, "calibrate": cmd_calibrate, "check": cmd_check,
     "init": cmd_init, "registrations": cmd_registrations,
     "export": cmd_export, "import": cmd_import, "verify": cmd_verify,
