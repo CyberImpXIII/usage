@@ -17,7 +17,9 @@
   (setup's render of tools/checks' runner; 1.1.0 at ba7f6a6, 1.2.0 since
   a6e197d, byte-equal; test_parts `RunnerCopy` goes red whenever checks moves
   on: `setup tools/usage --only parts --rebuild`, which needs a clean tree and
-  commits its render). A gate that did not run at all (guard with no hook,
+  commits its render; red again 2026-10-19, checks parts.py 1.4.0 at 0be97db,
+  reported to setup by tl-433: the tree is not clean, 4 .claude/ files changed
+  by no session of this repo, likely a setup render, unverified). A gate that did not run at all (guard with no hook,
   shared with no tools/checks) exits 3 from devtools/check.py: runner 1.2.0's
   `UNCHK`, never ok, not red, re-run by --resume. A shared check UNCHECKED on
   its own (repro, stores-exported, ...) is a line of the shared part, exit 0.
