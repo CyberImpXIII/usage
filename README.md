@@ -32,6 +32,9 @@ only after your `--set <model> ok`.)
                                  and a reply to one `claude -p --model <model>` probe, run only then (--no-probe: unknown
                                  instead). A rate-limit hit in a session on <model> holds it until the reset the error names.
                                  --set <model> ok|no "<reason>": your own answer, dated now, used for the same TTL
+  usage bars [--json]            every row of bars.json (PLAN-routing-tree.md §27): {name, label, pct, window, asof, age_s,
+                                 source, state, reason}; state ok, stale (older than the row's refresh, pct kept) or unknown
+                                 (pct null, the reason given: never 0). Text adds the latest rate_limits keys (the probe)
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
@@ -124,6 +127,39 @@ record per model per source; a writer replaces only its own source's record
   stream of each refusal are undocumented and unrun.
 - `tests/test_canrun.py` holds each rule with its counterfactual, with a stub
   CLI (`$USAGE_CLAUDE_CLI`) in place of `claude`.
+
+## The bars
+
+`usage bars [--json]` (PLAN-routing-tree.md §27, step 1) evaluates every row of
+`bars.json`, the registry the hub's widget reads through this verb and nothing
+else: one bar per row, `{name, label, pct, window, asof, age_s, source, state,
+reason}`. Adding a source is adding a row; `usagelib/bars.py` holds the format.
+
+| row | source | today |
+|---|---|---|
+| `session` | `{"window": "five_hour"}`: the 5h window of the latest status-line sample, read as `usage status` reads it | live |
+| `week` | `{"window": "seven_day"}` | live |
+| `fable-week` | `{"pending": ...}`: no source yet, always `unknown` with the reason | the probe found no per-model window (TODO.md); the share-of-week reading is §27 step 2, a transcripts verb |
+
+A third source kind runs another tool's verb: `{"service", "verb", "key",
+"timeout_s"[, "args", "asof_key"]}`, the CLI and verb its `cli.json` declares
+(`$USAGE_TOOLS_DIR`, else this repo's parent), reading number `key` (0..100)
+from the JSON object it prints, bounded by `timeout_s`.
+
+- **state**: `ok`; `stale` when the value is older than the row's `refresh`
+  (pct kept, `age_s` its age); `unknown` when the source did not answer, the
+  field is absent, or the row is invalid: pct `null` and `reason` says why.
+  Never `0` for a source that did not answer. The window rows' `refresh` is 900
+  s, `sample_stale_minutes`, so a bar is stale exactly when `usage status` says
+  STALE. No registry is exit 1 and nothing on stdout, never `[]`.
+- **The probe**: the text form ends with the latest `rate_limits` keys and
+  those no row names (names only), so a per-model window shows up the day the
+  status line carries one.
+- **The gate**: `./dev.sh check`'s `bars` part fails a row naming a window,
+  service or verb that does not exist, or any malformed row (UNCHECKED when a
+  named service's folder is absent). A service verb's `key` is checked only
+  when it runs (unknown with the reason). `tests/test_bars.py` holds each
+  rule with its counterfactual.
 
 ## The store
 
@@ -267,7 +303,8 @@ The gates (`python3 devtools/check.py [--json] [GATE...]`): `files` (scripts pre
 executable, parse), `hooks` (the shared hook copies pass their tests), `guard`
 (`tests/test_gated.py`'s `StoreGuard`: the installed store hook refuses a write
 to the store `usage init` gated; UNCHECKED while `.claude/hooks/store-guard.sh`
-is absent), `shared` (`tools/checks`, UNCHECKED when that sibling is absent). `checks.json` allows the
+is absent), `bars` (bars.json valid, every source it names exists; see The
+bars), `shared` (`tools/checks`, UNCHECKED when that sibling is absent). `checks.json` allows the
 names `hooks` (the settings key and the `.claude/hooks/` folder) and `checks`
 (the sibling tool) in no-roster's names half, which runs only when the caller
 exports `CHECKS_ROSTER_NAMES`; run with the full roster on 2026-10-05, it was clean.

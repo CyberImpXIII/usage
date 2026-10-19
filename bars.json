@@ -1,0 +1,11 @@
+{
+  "_comment": "The usage bars' registry (PLAN-routing-tree.md §27, Jacob 2026-10-19): one row per bar the hub draws, read by `usage bars [--json]` and by nothing else. Adding a source is adding a row. A row is name, label, window (5h, 7d, session, day), refresh (seconds: a value older than this is `stale`) and source: {\"window\": <one of this tool's windows>}, {\"service\", \"verb\", \"key\", \"timeout_s\"[, \"args\", \"asof_key\"]} (a verb the service's cli.json lists, printing a JSON object), or {\"pending\": <why>} (no source yet: always unknown). usagelib/bars.py holds the format; devtools/check.py's `bars` gate fails a row naming a window, service or verb that does not exist. refresh 900 = usage.json sample_stale_minutes, so a bar is stale exactly when `usage status` says STALE (tests/test_bars.py). fable-week: the probe of 2026-10-19 read rate_limits with five_hour and seven_day only (TODO.md, Usage bars in the hub), so its first reading has no source; its second waits on transcripts (§27 step 2).",
+  "bars": [
+    {"name": "session", "label": "This session (5h window)", "window": "5h", "refresh": 900,
+     "source": {"window": "five_hour"}},
+    {"name": "week", "label": "This week", "window": "7d", "refresh": 900,
+     "source": {"window": "seven_day"}},
+    {"name": "fable-week", "label": "Fable this week", "window": "7d", "refresh": 900,
+     "source": {"pending": "rate_limits carries no per-model (Fable) window (probe 2026-10-19: five_hour, seven_day only); the share-of-week reading waits on a transcripts verb (PLAN-routing-tree.md §27 step 2)"}}
+  ]
+}

@@ -216,3 +216,39 @@
   True for `~/.claude/usage/x` (a `~` path read as repo-relative). (3), "no way
   to say run state, not exported", is moot here since the ledgers are exported
   (2026-10-05); it still matters for a store that is wholly run state.
+
+## Usage bars in the hub (PLAN-routing-tree.md §27, tl-433)
+
+- **Step 1 done 2026-10-19**: bars.json (session, week, fable-week), `usage
+  bars [--json]`, the `bars` check gate, tests/test_bars.py.
+- **The Fable probe, 2026-10-19 (the §27 report)**: one live sample,
+  `jq '[.rate_limits | paths(scalars) | join(".")]' ~/.claude/usage/limits.json`
+  (sampled_at 1792440880, under a minute old): `five_hour.resets_at`,
+  `five_hour.used_percentage`, `seven_day.resets_at`,
+  `seven_day.used_percentage`, all numbers. No per-model (Fable) window and no
+  `spend_limit`. So fable-week is `{"pending": ...}`, always unknown with that
+  reason, not live. `usage bars` (text) prints the latest keys and any no row
+  names on every run: re-probe there. One sample on Opus; a sample taken while
+  Fable runs could differ (unconfirmed: probe the same jq after a Fable session).
+- **Open, step 2 (transcripts)**: a weekly share-by-model verb printing a JSON
+  object; then fable-week's source becomes `{"service": "transcripts", "verb":
+  ..., "key": ..., "timeout_s": ...}` and the `bars` gate checks the verb in
+  transcripts' cli.json (it has none yet: the gate would fail such a row).
+- **Open**: the plan says the registry is "the one place the widget and `usage
+  status` read"; `status` still reads calc.latest() directly. Both read the
+  same accessor and `AgreesWithStatus` holds them equal (number and staleness),
+  so this is wording, not drift. A service verb's `key` is checked only at run
+  time (unknown, with the reason), never by the gate: no service declares the
+  keys it prints.
+- **The store's cli.json is out of date** (`usage status`: "differs"): it lists
+  the verbs, which gained `can-run` (tl-355) and now `bars`. `usage init`
+  rewrites it; not run here (a write to the live store, outside this task).
+
+## Unconfirmed: SubagentStop's transcript is often absent (2026-10-19)
+
+- `usage failures`: 772 rows since 2026-10-18, all `stop SubagentStop
+  FileNotFoundError` on `<session>/subagents/agent-<id>.jsonl`; the folder
+  exists and holds other agents' files. Suspicion: the hook fires before the
+  file is written, or for agents that write none (cf. "A subagent's last
+  message may be missed" above). Each is a lost row, traced. Probe: for one
+  failing id, `ls` the path a minute after the failure's time.

@@ -15,7 +15,7 @@ import time
 
 from pathlib import Path
 
-from . import calc, config, datarepo, export, models, store, todo
+from . import bars, calc, config, datarepo, export, models, store, todo
 
 HELP = """\
   usage status                   latest 5h and 7d %, resets, time since the sample
@@ -31,6 +31,9 @@ HELP = """\
                                  and a reply to one `claude -p --model <model>` probe, run only then (--no-probe: unknown
                                  instead). A rate-limit hit in a session on <model> holds it until the reset the error names.
                                  --set <model> ok|no "<reason>": your own answer, dated now, used for the same TTL
+  usage bars [--json]            every row of bars.json (PLAN-routing-tree.md §27): {name, label, pct, window, asof, age_s,
+                                 source, state, reason}; state ok, stale (older than the row's refresh, pct kept) or unknown
+                                 (pct null, the reason given: never 0). Text adds the latest rate_limits keys (the probe)
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
   usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
@@ -201,6 +204,32 @@ def _model_arg(v):
 
 HIT_JSON = ("t","session", "resets_at", "window", "time", "agent_type", "five_hour_pct", "seven_day_pct",
             "sample_time", "flag")
+
+
+def cmd_bars(args):
+    as_json = _json_flag(args)
+    doc, why = bars.load()
+    if doc is None or not isinstance(doc, dict) or not isinstance(doc.get("bars"), list):
+        # no registry is "not known", never an empty list: exit 1, nothing on stdout
+        sys.stderr.write(f"usage bars: {why or 'bars.json is not an object with a bars list'}\n")
+        return 1
+    out = bars.evaluate(doc)
+    if as_json:
+        print(json.dumps([{k: b[k] for k in bars.OUTPUT} for b in out]))
+        return 0
+    for b in out:
+        pct = f"{b['pct']:.1f}%" if b["pct"] is not None else "--"
+        when = f"as of {b['asof']} ({b['age_s'] // 60} min ago)" if b["asof"] else ""
+        print(f"{b['name'] or '?':12} {pct:>6}  {b['window'] or '?':7} {b['state']:7}  "
+              + "  ".join(x for x in (when, b["source"] or "", b["reason"] or "") if x))
+    keys, at = bars.rate_limit_keys()
+    if keys is not None:
+        named = {r["source"]["window"] for r in doc["bars"]
+                 if isinstance(r, dict) and isinstance(r.get("source"), dict) and "window" in r["source"]}
+        rest = [k for k in keys if k not in named]
+        print(f"rate_limits keys (sample {store.iso(at) if at is not None else '?'}): {', '.join(keys) or 'none'}; "
+              f"named by no row: {', '.join(rest) or 'none'}")
+    return 0
 
 
 def cmd_hits(args):
@@ -388,7 +417,7 @@ def cmd_verify(args):
 
 COMMANDS = {
     "status": cmd_status, "burn": cmd_burn, "project": cmd_project, "gate": cmd_gate, "can-run": cmd_can_run,
-    "hits": cmd_hits, "failures": cmd_failures, "tokens": cmd_tokens, "calibrate": cmd_calibrate, "check": cmd_check,
+    "bars": cmd_bars, "hits": cmd_hits, "failures": cmd_failures, "tokens": cmd_tokens, "calibrate": cmd_calibrate, "check": cmd_check,
     "init": cmd_init, "registrations": cmd_registrations,
     "export": cmd_export, "import": cmd_import, "verify": cmd_verify,
 }

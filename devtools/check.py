@@ -10,6 +10,9 @@ runner devtools/parts.py.
   guard   the store hook (.claude/hooks/store-guard.sh, or $USAGE_STORE_GUARD)
           refuses a hand write to a store `usage init` gated
           (tests/test_gated.py StoreGuard); UNCHECKED, never ok, without it
+  bars    bars.json (or $USAGE_BARS) is a valid registry and every window,
+          service and verb a row names exists (usagelib/bars.py problems());
+          UNCHECKED when a named service's folder is absent (a lone clone)
   shared  tools/checks' generic gates (`checks run . --json`), one entry each as
           shared:<name>; UNCHECKED, never ok, when that sibling is absent.
           Roster names for no-roster's second half come from the caller
@@ -68,7 +71,7 @@ def gate_files():
             compile(p.read_text(), str(p), "exec")
         except SyntaxError as e:
             found.append(failure(f"does not compile: {e.msg}", str(p.relative_to(ROOT)), e.lineno))
-    for name in ("usage.json", "cli.json", "checks.json", "check.parts.json"):
+    for name in ("usage.json", "cli.json", "checks.json", "check.parts.json", "bars.json"):
         try:
             json.loads((ROOT / name).read_text())
         except (OSError, ValueError) as e:
@@ -156,7 +159,28 @@ def gate_shared():
     return out
 
 
-GATES = {"files": gate_files, "hooks": gate_hooks, "guard": gate_guard, "shared": gate_shared}
+def gate_bars():
+    """bars.json (or $USAGE_BARS): every row valid and every source it names
+    exists (usagelib/bars.py problems(), the one validator `usage bars` uses too)."""
+    sys.path.insert(0, str(ROOT))
+    from usagelib import bars
+    path = bars.registry()
+    doc, why = bars.load(path)
+    if doc is None:
+        return result("bars", [failure(why, path.name)])
+    found = bars.problems(doc)
+    fails = [failure(f"{w}: {m}", path.name) for w, m, k in found if k == bars.FAIL]
+    if fails:
+        return result("bars", fails)
+    unchk = [f"{w}: {m}" for w, m, k in found if k == bars.UNCHECKED]
+    if unchk:
+        return result("bars", status="unchecked", reason="; ".join(unchk))
+    res = result("bars")
+    res["_note"] = f"{len(doc['bars'])} rows in {path}"
+    return res
+
+
+GATES = {"files": gate_files, "hooks": gate_hooks, "guard": gate_guard, "bars": gate_bars, "shared": gate_shared}
 
 
 def main(argv):

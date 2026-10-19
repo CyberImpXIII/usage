@@ -2,6 +2,7 @@
  "_comment": "This repo's `./dev.sh check`, in parts, run by devtools/parts.py (setup's `parts` component renders it from tools/checks' runner; its header is the format). Every part reads the whole repo ('.'); a test part does not read the other test modules or TODO.md. A part whose result depends on what no files list can name (a sibling tool, the workspace top, its recipes) says `always` and is never skipped by --resume. tests/test_parts.py holds this file to the test modules (one part per tests/test_*.py) and to devtools/check.py's gates (one part each), both ways.",
  "defaults": {"files": ["."], "timeout_s": 900, "role": "tests"},
  "parts": [
+  {"name": "test.bars", "run": "python3 -m unittest tests.test_bars", "files": ["tests/test_bars.py"], "except": ["tests/test_*.py", "TODO.md"]},
   {"name": "test.canrun", "run": "python3 -m unittest tests.test_canrun", "files": ["tests/test_canrun.py"], "except": ["tests/test_*.py", "TODO.md"]},
   {"name": "test.check", "run": "python3 -m unittest tests.test_check", "files": ["tests/test_check.py"], "except": ["tests/test_*.py", "TODO.md"]},
   {"name": "test.config", "run": "python3 -m unittest tests.test_config", "files": ["tests/test_config.py"], "except": ["tests/test_*.py", "TODO.md"]},
@@ -24,6 +25,8 @@
   {"name": "hooks", "run": "python3 devtools/check.py hooks", "role": "audit", "timeout_s": 2400,
    "always": "test-prefer-recipes.sh and test-troubleshooting.sh read the workspace's recipes"},
   {"name": "guard", "run": "python3 devtools/check.py guard"},
+  {"name": "bars", "run": "python3 devtools/check.py bars", "role": "code",
+   "always": "a service row's verb is read from that sibling repo's cli.json"},
   {"name": "shared", "run": "python3 devtools/check.py shared", "role": "audit",
    "always": "`checks run .` reads tools/hooks, the workspace top and the user's settings"}
  ]
