@@ -13,11 +13,19 @@ This file is a versioned, loadable dependency (PLAN-services.md S0.1): the
 standard library only, no import from beside it, so a copy works alone
 (tests/test_parts.py holds that). A repo's dev.sh runs it as a script.
 
-  parts.py run <parts.json> [--resume | --only <name>...] [--json]
-      Runs the parts in file order, one at a time. Text: one line per part as
-      it ends (`ok`, `skip`, `FAIL` with up to 8 of its FAIL/ERROR lines,
-      `ERROR` for a timeout), then `check: N of M passed; failed: <name>
-      (<why>: <its first FAIL line>); ...`. With --resume the first line is
+  parts.py run <parts.json> [--resume | --only <name>...] [--jobs <n>] [--json]
+      Runs the parts in a pool, up to --jobs <n> at once (default: the CPU
+      count; --jobs 1 runs them one at a time, in file order, as 1.3.0 did),
+      starting them in file order. Two parts that share a `uses` value never
+      run at once, and a `serial` part runs alone: nothing after it in the
+      file starts before it. A part that fails stops no other: every part
+      runs and reports. Text: one line per part (`ok`, `skip`,
+      `FAIL` with up to 8 of its FAIL/ERROR lines, `ERROR` for a timeout) in
+      the FILE's order, never the order parts end (a part's line waits for
+      the parts before it), then `time: <wall>s wall, <sum>s summed over <k>
+      part(s) run (--jobs <n>), <p>% of it in serial parts`, then `check: N
+      of M passed; failed: <name> (<why>: <its first FAIL line>); ...`.
+      With --resume the first line is
       `resume: re-running m of M: <names>; ...` or `full run: <why>`.
       --only <name> (repeatable) runs just the parts named, M being their
       count: the first line is `only: running m of M: <names>; keeping k ...`,
@@ -50,7 +58,7 @@ standard library only, no import from beside it, so a copy works alone
 
 THE PARTS FILE: {"parts": [part, ...], "defaults"?: {...}, "_comment"?}
   part: {"name", "run", "files", "timeout_s", "except"?, "shape"?, "role"?,
-         "always"?, "_comment"?}
+         "always"?, "uses"?, "_comment"?}
   name       [A-Za-z0-9._-]+, unique
   run        a sh command, run in the parts file's folder, stdin /dev/null,
              stdout and stderr to <logs>/<name>.log
@@ -67,11 +75,18 @@ THE PARTS FILE: {"parts": [part, ...], "defaults"?: {...}, "_comment"?}
   always     why this part is never skipped by --resume (its result depends on
              what no `files` list can name: another repo's live tree, the
              user's settings). A part with no files must say this.
+  uses       what the part holds that no other part may hold at the same time
+             (PLAN-check-progress.md §10), each `browser` (it drives a
+             browser), `store:<name>` (it writes that live store) or `serial`
+             (it runs alone). Two parts sharing a value never overlap; any
+             other value is refused. A declared choice, never a fault: no
+             check counts serial parts against a repo. Scheduling only, so
+             not in the hash.
   `defaults` holds files, except, shape (prepended to each part's), timeout_s
   and role (fallbacks). A path named exactly in `files` counts by content,
   whatever except and shape say. Any other key is refused: a typo such as
   `timeout` is a fault, never ignored.
-  A part's hash covers its definition (all but timeout_s and role), this
+  A part's hash covers its definition (all but timeout_s, role and uses), this
   runner's VERSION, the runtime (PARTS_RUNTIME, else this Python's version)
   and every path its files reach. It is a CLAIM: an undeclared file the part
   does read makes --resume skip it wrongly. Declare wide, or say `always`.
@@ -81,17 +96,23 @@ the stem being the parts file's name up to its first dot (check.parts.json:
 check), which is also the `cmd` field. The fields of the shared progress.sh (cmd pid started updated
 step total label passed failed failed_names state last_duration_s
 resumed_from), plus passed_steps (the parts that passed, skipped ones
-included), hashes ({part: its hash when it passed}), runner (VERSION), and
-only and kept (the names given to --only and the passes kept from the last
-file; both null on a run without --only).
+included, in the order they ended), hashes ({part: its hash when it passed}),
+runner (VERSION), only and kept (the names given to --only and the passes
+kept from the last file; both null on a run without --only), jobs (the pool
+size), running (the parts running now, in file order; `label` is the part
+started or skipped last), times ({part: {start, end}}, Unix seconds, for each part that
+ran; end missing while it runs), and, once the run is over, wall_s, parts_s
+(the summed seconds of the parts that ran) and serial_s (those of `serial`
+parts): the numbers on the `time:` line.
 Rewritten whole (temp file, then rename) when the run starts, when each part
-starts and when each part ends. The logs are in <progress file>.logs/ (a
+starts and when each part ends, by the runner's main thread alone. The logs are in <progress file>.logs/ (a
 temp folder when that cannot be made; each part's line names its log). The
 progress file, its temp files and the logs are never part of any hash.
 A resume is refused (a full run, said) when the file is missing, unreadable,
 older than $PARTS_MAX_AGE seconds (86400), names no passed part, or a live run
-is writing it. TERM, INT and HUP stop the running part's tree, mark the parts
-not run `unchecked`, and end the file `failed`. A SIGKILL to the runner alone
+is writing it. TERM, INT and HUP stop every running part's tree (each is
+`error`, stopped by the signal; a part that had already passed stays ok),
+mark the parts not run `unchecked`, and end the file `failed`. A SIGKILL to the runner alone
 cannot be caught: a part runs in the runner's process group, so a kill of the
 group (what a caller's timeout does) takes the part with it.
 """
@@ -100,16 +121,20 @@ import fnmatch
 import hashlib
 import json
 import os
+import queue
 import re
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 NAME = re.compile(r"[A-Za-z0-9._-]+\Z")
-PART_KEYS = {"name", "run", "files", "except", "shape", "timeout_s", "role", "always", "_comment"}
+USES = re.compile(r"(browser|serial|store:[A-Za-z0-9._/-]+)\Z")
+SERIAL = "serial"
+PART_KEYS = {"name", "run", "files", "except", "shape", "timeout_s", "role", "always", "uses", "_comment"}
 DEFAULT_KEYS = {"files", "except", "shape", "timeout_s", "role", "_comment"}
 LISTS = ("files", "except", "shape")
 FAIL_LINE = re.compile(r"^\s*(FAIL|ERROR)\b")
@@ -120,10 +145,6 @@ EXIT_UNCHECKED = 3
 
 class Refused(Exception):
     """The parts file cannot be run; each arg is one fault."""
-
-
-class Stopped(Exception):
-    """A TERM, INT or HUP arrived."""
 
 
 def now():
@@ -206,6 +227,16 @@ def check(doc, base):
         if "always" in p and not (isinstance(p["always"], str) and p["always"].strip()):
             faults.append(f"{where}: `always` must say why (a non-empty string)")
         merged["always"] = p.get("always")
+        merged["uses"] = []
+        if "uses" in p:
+            uses = p["uses"]
+            if not isinstance(uses, list) or not all(isinstance(x, str) and x for x in uses):
+                faults.append(f"{where}: `uses` is not a list of non-empty strings")
+            else:
+                bad = [x for x in uses if not USES.match(x)]
+                for x in bad:
+                    faults.append(f"{where}: `uses` value {x!r} is not browser, serial or store:<name>")
+                merged["uses"] = [] if bad else list(uses)
         if not merged["files"] and not merged["always"]:
             faults.append(f"{where}: no `files` and no `always`: --resume would skip it forever")
         for f in merged["files"]:
@@ -381,15 +412,24 @@ class Progress:
             pass
         return None
 
-    def start(self, total):
+    def start(self, total, jobs, order):
+        self.order = order
         self.state = {"cmd": self.cmd, "pid": os.getpid(), "started": now(), "updated": now(), "step": 0,
                       "total": total, "label": "", "passed": 0, "failed": 0, "failed_names": [],
                       "state": "running", "last_duration_s": self.last_duration(), "resumed_from": None,
-                      "passed_steps": [], "hashes": {}, "runner": VERSION, "only": None, "kept": None}
+                      "passed_steps": [], "hashes": {}, "runner": VERSION, "only": None, "kept": None,
+                      "jobs": jobs, "running": [], "times": {}}
         self.write()
 
-    def label(self, name):
+    def _running(self, name, on):
+        now_running = set(self.state["running"]) | {name} if on else set(self.state["running"]) - {name}
+        self.state["running"] = [n for n in self.order if n in now_running]
+
+    def begin(self, name):
+        """The part has started: it is the label, it is running, its start time."""
         self.state["label"] = name
+        self._running(name, True)
+        self.state["times"][name] = {"start": round(time.time(), 3)}
         self.write()
 
     def step(self, name, ok, h):
@@ -397,7 +437,11 @@ class Progress:
         nor failed, and not kept for --resume (it runs again)."""
         s = self.state
         s["step"] += 1
-        s["label"] = name
+        if name in s["times"]:
+            s["times"][name]["end"] = round(time.time(), 3)
+            self._running(name, False)
+        else:
+            s["label"] = name
         if ok is None:
             pass
         elif ok:
@@ -514,14 +558,28 @@ def fail_lines(log):
     return fails, last
 
 
-def run_part(base, part, logs):
-    """(status ok|fail|unchecked|error, why, failure lines, seconds, log path).
-    For `unchecked` the one line is the reason (the part's last output line)."""
+def start_part(base, part, logs):
+    """The part's process, started by the main thread (so a signal finds it):
+    {part, p, out, log, t0, stopped}; `stopped` is set by the main thread when
+    it stops the part's tree on a signal."""
     log = os.path.join(logs, part["name"] + ".log")
-    t0 = time.monotonic()
-    with open(log, "w") as out:
+    out = open(log, "w")
+    try:
         p = subprocess.Popen(["/bin/sh", "-c", part["run"]], cwd=base, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT)
+    except BaseException:
+        out.close()
+        raise
+    return {"part": part, "p": p, "out": out, "log": log, "t0": time.monotonic(), "stopped": None}
+
+
+def finish_part(run):
+    """(status ok|fail|unchecked|error, why, failure lines, seconds, log path):
+    waits for the part, past its timeout_s stopping its whole tree. Run in a
+    worker thread, one per running part; it writes nothing but returns.
+    For `unchecked` the one line is the reason (the part's last output line)."""
+    part, p, log, t0 = run["part"], run["p"], run["log"], run["t0"]
+    try:
         try:
             code = p.wait(timeout=part["timeout_s"])
             status, why = ("ok", "") if code == 0 else (
@@ -530,10 +588,8 @@ def run_part(base, part, logs):
             kill_tree(p.pid)
             p.wait()
             status, why = "error", f"timeout after {part['timeout_s']:g}s"
-        except Stopped:
-            kill_tree(p.pid)
-            p.wait()
-            raise
+    finally:
+        run["out"].close()
     fails, last = fail_lines(log)
     if status == "unchecked":
         return status, why, [last or f"{why}; no output"], time.monotonic() - t0, log
@@ -560,6 +616,32 @@ def summary(n, m, failed):
     return line + ("; failed: " + "; ".join(failed) if failed else "")
 
 
+def time_line(wall, ran, parts_s, serial_s, jobs):
+    """The encouragement (§10): the wall time beside the summed part times, and
+    the share of them spent in `serial` parts. A number, deciding nothing."""
+    if not ran:
+        return f"time: {wall:.1f}s wall, no part ran (--jobs {jobs})"
+    share = f"{100 * serial_s / parts_s:.0f}%" if parts_s > 0 else "unmeasured"
+    return (f"time: {wall:.1f}s wall, {parts_s:.1f}s summed over {ran} part(s) run (--jobs {jobs}),"
+            f" {share} of it in serial parts")
+
+
+def default_jobs():
+    """The pool size when --jobs is not given: the CPU count."""
+    return os.cpu_count() or 1
+
+
+def blocked(part, running):
+    """Whether the part may not start beside the running parts: a `serial` part
+    runs alone, and two parts sharing a `uses` value never overlap."""
+    mine = set(part["uses"])
+    for other in running:
+        theirs = set(other["uses"])
+        if SERIAL in mine or SERIAL in theirs or mine & theirs:
+            return True
+    return False
+
+
 def shorten(names, limit=10):
     return ", ".join(names[:limit]) + (f", ... ({len(names) - limit} more)" if len(names) > limit else "")
 
@@ -578,7 +660,7 @@ def refused(args, faults, as_json):
 # `usage --json` (what a consumer reads, never the help text): {flag: the
 # value it takes or None}, in usage order; the ones that repeat; the pairs
 # refused together (each shown as `[a | b]` in the usage line).
-RUN_OPTIONS = {"--resume": None, "--only": "<name>", "--json": None}
+RUN_OPTIONS = {"--resume": None, "--only": "<name>", "--jobs": "<n>", "--json": None}
 RUN_REPEATABLE = ("--only",)
 RUN_EXCLUSIVE = (("--resume", "--only"),)
 
@@ -617,28 +699,57 @@ def cmd_usage(args):
 
 
 def options(rest):
-    """(flags, only names, fault or None) from the words after the parts file."""
-    flags, only, i = set(), [], 0
+    """(flags, only names, fault or None, jobs or None) from the words after
+    the parts file; jobs None means --jobs was not given (default_jobs())."""
+    flags, only, jobs, i = set(), [], None, 0
     while i < len(rest):
         a = rest[i]
         if a in RUN_OPTIONS and RUN_OPTIONS[a] is None:
             flags.add(a)
         elif a == "--only":
             if i + 1 >= len(rest) or rest[i + 1].startswith("--"):
-                return flags, only, f"--only needs a part name ({RUN_USAGE})"
+                return flags, only, f"--only needs a part name ({RUN_USAGE})", jobs
             only.append(rest[i + 1])
             i += 1
+        elif a == "--jobs":
+            if jobs is not None:
+                return flags, only, "--jobs given twice", jobs
+            v = rest[i + 1] if i + 1 < len(rest) else ""
+            if not (v.isascii() and v.isdigit() and int(v) > 0):
+                return flags, only, f"--jobs needs a whole number above 0, not {v!r} ({RUN_USAGE})", jobs
+            jobs = int(v)
+            i += 1
         else:
-            return flags, only, f"unknown option {a} ({RUN_USAGE})"
+            return flags, only, f"unknown option {a} ({RUN_USAGE})", jobs
         i += 1
     if only and "--resume" in flags:
-        return flags, only, "--only and --resume together: --only runs exactly the parts it names"
-    return flags, only, None
+        return flags, only, "--only and --resume together: --only runs exactly the parts it names", jobs
+    return flags, only, None, jobs
+
+
+SKIPPED = ("skip",)
+
+
+def part_lines(part, result, base, when):
+    """The text lines a finished part says, in the file's order."""
+    name = part["name"]
+    if result is SKIPPED:
+        return [f"skip  {name} (passed at {when}, its files unchanged)"]
+    status, why, fails, secs, log = result
+    rel = os.path.relpath(log, base) if log.startswith(base + os.sep) else log
+    if status == "stopped":
+        return [f"ERROR {name} ({why})"]
+    if status == "unchecked":
+        return [f"UNCHK {name} ({why}, {secs:.0f}s; log: {rel})", f"  {fails[0]}"]
+    if status == "ok":
+        return [f"ok    {name} ({secs:.0f}s)"]
+    return ([f"{'FAIL ' if status == 'fail' else 'ERROR'} {name} ({why}, {secs:.0f}s; log: {rel})"]
+            + [f"  {line}" for line in fails])
 
 
 def cmd_run(args):
     path = args[0]
-    flags, only, fault = options(args[1:])
+    flags, only, fault, jobs = options(args[1:])
     as_json = "--json" in args[1:]
     if fault:
         return refused(args, [fault], as_json)
@@ -676,70 +787,141 @@ def cmd_run(args):
                     f" (their files changed, they did not pass, or they are `always`);"
                     f" skipping {len(skip)} that passed at {when}, their files unchanged")
 
-    def on_signal(signum, _frame):
-        raise Stopped(signum)
+    # A signal only sets `stop`: the main thread notices it between waits, so no
+    # part is ever started half-way, or left running unrecorded.
+    stop = []
 
+    def on_signal(signum, _frame):
+        if not stop:
+            stop.append(signum)
+
+    jobs = jobs or default_jobs()
     old_handlers = {s: signal.signal(s, on_signal) for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
-    pf.start(len(parts))
+    pf.start(len(parts), jobs, [p["name"] for p in parts])
     if skip:
         pf.state["resumed_from"] = f"{len(skip)}/{len(parts)} at {when}"
     if only:
         pf.state.update(only=[p["name"] for p in parts], kept=kept, passed_steps=list(kept),
                         hashes={n: hashes[n] for n in kept})
         pf.write()
-    checks, failed, unchecked, n, stopped, current = [], [], [], 0, None, None
+    # Every part's result lands here, in the main thread, whatever order they
+    # end in: allSettled over threads, each waiting on one part's process.
+    results, running, pending, ended = {}, {}, list(parts), queue.Queue()
+    told, wall0, stopped = 0, time.monotonic(), None
 
-    def restore():
-        for s, hd in old_handlers.items():
-            signal.signal(s, hd)
+    def settle(run):
+        try:
+            ended.put((run, finish_part(run)))
+        except BaseException as e:      # never a thread that ends without its part's result
+            ended.put((run, ("error", f"the runner failed waiting on it: {e!r}", [f"runner fault: {e!r}"],
+                             time.monotonic() - run["t0"], run["log"])))
+
+    def launch():
+        """Start what may start, in file order: up to `jobs` at once, never two
+        sharing a `uses` value, a `serial` part alone and before anything after it."""
+        for part in list(pending):
+            name = part["name"]
+            if len(running) >= jobs:
+                break
+            if name in skip:
+                pending.remove(part)
+                pf.step(name, True, hashes[name])
+                results[name] = SKIPPED
+                continue
+            if blocked(part, [r["part"] for r in running.values()]):
+                if SERIAL in part["uses"]:
+                    break
+                continue
+            pending.remove(part)
+            pf.begin(name)
+            run = start_part(base, part, pf.log_dir())
+            running[name] = run
+            threading.Thread(target=settle, args=(run,), daemon=True).start()
+
+    def land(run, result):
+        name = run["part"]["name"]
+        del running[name]
+        if run["stopped"] is not None and result[0] != "ok":
+            sig = run["stopped"]
+            result = ("stopped", f"stopped by signal {sig}", [f"stopped by signal {sig} while it ran"],
+                      result[3], result[4])
+        pf.step(name, None if result[0] == "unchecked" else result[0] == "ok", hashes[name])
+        results[name] = result
+
+    def say_ready(final=False):
+        """Each finished part's lines, in the file's order: a part waits for
+        those before it (on `final`, the parts that never ran say nothing)."""
+        nonlocal told
+        while told < len(parts) and (parts[told]["name"] in results or final):
+            part = parts[told]
+            if part["name"] in results:
+                for line in part_lines(part, results[part["name"]], base, when):
+                    say(line)
+            told += 1
 
     try:
-        for part in parts:
-            current = part
-            name, h = part["name"], hashes[part["name"]]
-            if name in skip:
-                pf.step(name, True, h)
-                n += 1
-                checks.append(entry(name, "ok", part["role"], skipped=True))
-                say(f"skip  {name} (passed at {when}, its files unchanged)")
+        launch()
+        say_ready()
+        while running and not stop:
+            try:
+                run, result = ended.get(timeout=0.2)
+            except queue.Empty:
                 continue
-            pf.label(name)
-            status, why, fails, secs, log = run_part(base, part, pf.log_dir())
-            ok = status == "ok"
-            rel = os.path.relpath(log, base) if log.startswith(base + os.sep) else log
-            if status == "unchecked":
-                pf.step(name, None, h)
-                checks.append(entry(name, status, part["role"], reason=f"{why}: {fails[0]}"))
-                unchecked.append(f"{name} ({fails[0]})")
-                say(f"UNCHK {name} ({why}, {secs:.0f}s; log: {rel})")
-                say(f"  {fails[0]}")
-                continue
-            pf.step(name, ok, h)
-            checks.append(entry(name, status, part["role"], [] if ok else fails, base=base))
-            if ok:
-                n += 1
-                say(f"ok    {name} ({secs:.0f}s)")
-            else:
-                failed.append(f"{name} ({fails[0]})" if fails[0].startswith(why) else f"{name} ({why}: {fails[0]})")
-                say(f"{'FAIL ' if status == 'fail' else 'ERROR'} {name} ({why}, {secs:.0f}s; log: {rel})")
-                for line in fails:
-                    say(f"  {line}")
-    except Stopped as e:
-        restore()
-        stopped = e.args[0]
-        if current is not None and current["name"] not in {c["name"] for c in checks}:
-            name = current["name"]
-            checks.append(entry(name, "error", current["role"], [f"stopped by signal {stopped} while it ran"]))
-            failed.append(f"{name} (stopped by signal {stopped})")
-            pf.step(name, False, hashes[name])
-            say(f"ERROR {name} (stopped by signal {stopped})")
-        done = {c["name"] for c in checks}
-        for part in parts:
-            if part["name"] not in done:
-                checks.append(entry(part["name"], "unchecked", part["role"],
-                                    reason=f"not run: the runner was stopped by signal {stopped}"))
+            land(run, result)
+            if not stop:
+                launch()
+            say_ready()
+        if stop:
+            stopped = stop[0]
+            for run in running.values():
+                run["stopped"] = stopped
+                kill_tree(run["p"].pid)
+            deadline = time.monotonic() + 30       # a killed tree's wait returns at once; bounded all the same
+            while running and time.monotonic() < deadline:
+                try:
+                    land(*ended.get(timeout=0.2))
+                except queue.Empty:
+                    continue
+            for name, run in list(running.items()):
+                print(f"parts: {name} did not settle within 30s of signal {stopped}; reported stopped",
+                      file=sys.stderr)
+                land(run, ("error", "", [], time.monotonic() - run["t0"], run["log"]))
+        say_ready(final=True)
     finally:
-        restore()
+        for s, hd in old_handlers.items():
+            signal.signal(s, hd)
+    checks, failed, unchecked, n = [], [], [], 0
+    ran = parts_s = serial_s = 0
+    for part in parts:
+        name, result = part["name"], results.get(part["name"])
+        if result is None:
+            checks.append(entry(name, "unchecked", part["role"], reason=(
+                f"not run: the runner was stopped by signal {stopped}" if stopped is not None
+                else "not run: the runner never started it")))
+            continue
+        if result is SKIPPED:
+            n += 1
+            checks.append(entry(name, "ok", part["role"], skipped=True))
+            continue
+        status, why, fails, secs, log = result
+        ran, parts_s = ran + 1, parts_s + secs
+        serial_s += secs if SERIAL in part["uses"] else 0
+        if status == "stopped":
+            checks.append(entry(name, "error", part["role"], fails))
+            failed.append(f"{name} ({why})")
+            continue
+        if status == "unchecked":
+            checks.append(entry(name, status, part["role"], reason=f"{why}: {fails[0]}"))
+            unchecked.append(f"{name} ({fails[0]})")
+            continue
+        ok = status == "ok"
+        checks.append(entry(name, status, part["role"], [] if ok else fails, base=base))
+        if ok:
+            n += 1
+        else:
+            failed.append(f"{name} ({fails[0]})" if fails[0].startswith(why) else f"{name} ({why}: {fails[0]})")
+    wall = time.monotonic() - wall0
+    pf.state.update(wall_s=round(wall, 3), parts_s=round(parts_s, 3), serial_s=round(serial_s, 3))
     all_ok = n + len(unchecked) == len(parts)        # a part that said unchecked is neither a pass nor a fail
     pf.end("passed" if all_ok else "failed")
     if only:
@@ -752,6 +934,7 @@ def cmd_run(args):
         not_run = sum(c["status"] == "unchecked" for c in checks) - len(unchecked)
         said = "; not run: " + (f"{not_run} (--only)" if only and not stopped else str(not_run))
         said_unchecked = "; unchecked: " + "; ".join(unchecked) if unchecked else ""
+        say(time_line(wall, ran, parts_s, serial_s, jobs))
         say(summary(n, len(parts), failed) + said_unchecked + (said if not_run else ""))
     if stopped is not None:
         return 128 + stopped
