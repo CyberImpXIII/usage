@@ -17,9 +17,15 @@
   (setup's render of tools/checks' runner; 1.1.0 at ba7f6a6, 1.2.0 since
   a6e197d, byte-equal; test_parts `RunnerCopy` goes red whenever checks moves
   on: `setup tools/usage --only parts --rebuild`, which needs a clean tree and
-  commits its render; red again 2026-10-19, checks parts.py 1.4.0 at 0be97db,
-  reported to setup by tl-433: the tree is not clean, 4 .claude/ files changed
-  by no session of this repo, likely a setup render, unverified). A gate that did not run at all (guard with no hook,
+  commits its render; red 2026-10-19 at checks 1.4.0 (0be97db); setup re-rendered
+  it --no-commit 2026-10-20 (su-99, "the commit is usage's"), byte-equal to
+  checks' checkslib/parts.py (cmp), committed here with tl-466. Still
+  uncommitted and not this repo's: .claude/hooks/store-guard.sh,
+  test-store-guard.sh, .claude/lib/ledger.sh (mtime 2026-10-17) and
+  .claude/settings.json (2026-10-15, adds git-funnel.sh + store-guard.sh, the
+  proposal Jacob copies); unverified who wrote them -- settle: `./setup
+  tools/usage --dry-run` from tools/setup. They keep the tree dirty, so setup's
+  committing renders are refused here). A gate that did not run at all (guard with no hook,
   shared with no tools/checks) exits 3 from devtools/check.py: runner 1.2.0's
   `UNCHK`, never ok, not red, re-run by --resume. A shared check UNCHECKED on
   its own (repro, stores-exported, ...) is a line of the shared part, exit 0.
@@ -243,6 +249,9 @@
 
 ## SubagentStop's missing transcript is a skip, not a failure (tl-466, 2026-10-20)
 
+- **tl-466 done**: a08d88c (status/gate --json, the skip); `./dev.sh check`
+  19 of 19 after setup's parts.py render. Live: `gate 6000000 --json` verdict
+  hold, exit 1, window 5h, hold_until == 5h resets_at; text form exit 1 too.
 - **Probed 2026-10-20**: failures.tsv held 1,093 rows since 2026-10-18, every
   one `stop SubagentStop FileNotFoundError` on
   `<session>/subagents/agent-<id>.jsonl`, 1,093 distinct paths; `ls` of each,
@@ -260,3 +269,10 @@
   and `usage status` says "write failures: 1093" until it is moved aside.
   Moving it is a write to the gated live store, not taken here:
   `mv ~/.claude/usage/failures.tsv ~/.claude/usage-failures-2026-10-20.tsv`.
+
+## Reported here by other repos (todo report)
+
+- todo:tl-345 from claudeTest (2026-10-19): PLAN-architecture.md §9 step 10.3: your services.json registry draft is in RESEARCH-registry-drafts.md, section `tools/usage`; write it in, then checks one registered
+  evidence: Draft by deep-work 2026-10-19 (tl-322), read-only: description, stores and shapes for tools/usage, written from its CLAUDE.md and cli.json; validated as written there: checks one registered and checks one services-valid both ok on a git-archive copy of the repo with the draft as services.json, other fields unchanged. stores = cli.json's 6 ~/.claude/usage/ entries; no shapes. Reword the description freely; stores must stay equal to cli.json's store (registered holds them equal both ways).
+  done when: services.json in tools/usage carries description, stores and (where any) shapes, and 'checks one registered tools/usage' from tools/checks is ok
+  (todo -C . show tl-345; filed here because usage has no todo store)
