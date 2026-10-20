@@ -186,6 +186,29 @@ class Stub(Slope):
         self.assert_unchecked(self.gate("x-1", self.stub("not json")), "printed no {record} object")
         self.assert_unchecked(self.gate("x-1", self.stub('{"record": "S"}')), "printed no {record} object")
 
+    def test_json_carries_the_todo_and_the_verdict(self):
+        """`gate --todo <id> --json`: the same verdict and exit as the text, the
+        item and its size as fields; unchecked is verdict unchecked, exit 3,
+        tokens null (no number)."""
+        env = self.env()
+        env["USAGE_TODO_CLI"] = str(self.stub(self.record(size="S")))
+
+        def run(*args):
+            return subprocess.run([str(ROOT / "usage"), "gate", "--todo", "x-1", *args], capture_output=True,
+                                  text=True, env=env, timeout=120)
+        text, r = run(), run("--json")
+        doc = json.loads(r.stdout)
+        self.assertEqual((r.returncode, doc["exit"]), (text.returncode, text.returncode))
+        self.assertEqual(doc["line"], text.stdout.splitlines()[0])
+        self.assertEqual((doc["tokens"], doc["todo"]), (size_tokens()["S"], {"id": "x-1", "size": "S"}))
+        (self.tmp / "answer").write_text(self.record())  # counterfactual: unsized
+        r = run("--json")
+        doc = json.loads(r.stdout)
+        self.assertEqual((r.returncode, doc["verdict"], doc["exit"], doc["tokens"]), (3, "unchecked", 3, None))
+        self.assertEqual((doc["todo"], doc["hold_until"], doc["window"]), ({"id": "x-1", "size": None}, None, None))
+        self.assertTrue(doc["line"].startswith("unknown, unchecked: todo:x-1 is unsized"), doc)
+
     def test_bad_arguments_are_usage_errors(self):
-        for args in (["--todo"], ["--todo", "--json"], ["--todo", "a", "b"], ["--toda", "x-1"]):
+        for args in (["--todo"], ["--todo", "--json"], ["--todo", "a", "b"], ["--toda", "x-1"],
+                     ["--todo", "x-1", "--json", "--json"]):
             self.assertEqual(self.cli("gate", *args).returncode, 2, args)

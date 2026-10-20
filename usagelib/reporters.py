@@ -21,6 +21,7 @@ from . import config, models, store
 WINDOWS = (("5h", "five_hour"), ("7d", "seven_day"))
 RATE_LIMIT_ERROR = "rate_limit"
 NOT_RECORDED = " | usage: not recorded"
+MISSING_TRANSCRIPT = "no transcript file"
 
 
 # ------------------------------------------------------------- status line --
@@ -192,6 +193,14 @@ def stop(data):
     agent = data.get("agent_type") if isinstance(data.get("agent_type"), str) else ""
     session = data.get("session_id") if isinstance(data.get("session_id"), str) else ""
     t = config.now()
+    if data.get("hook_event_name") == "SubagentStop" and not Path(transcript).exists():
+        # Many subagents never write the file the hook names (1,093 of them by
+        # 2026-10-20, none present later): nothing to read, so a skip, counted
+        # in state/skips.json (`usage failures`), not a failure. A main Stop
+        # with no transcript is still a failure: that one is not expected.
+        with store.locked() as d:
+            store.record_skip(d, "stop", "SubagentStop", MISSING_TRANSCRIPT)
+        return
     with store.locked() as d:
         sf = _state_file(d, transcript)
         try:

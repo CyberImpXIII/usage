@@ -223,6 +223,42 @@ def record_failure(reporter, event, exc):
     return None
 
 
+# ------------------------------------------------------------- skips --
+# A row a reporter skips on purpose, because there is nothing to read (a
+# SubagentStop whose transcript file does not exist), is not a failure and is
+# not in failures.tsv: it is counted here, in state/ (named by STORE_FILES'
+# state/*), so it is never silent. One key per reporter, event and reason, so
+# the file stays a few lines however many skips it counts.
+SKIPS = "skips.json"
+
+
+def record_skip(d, reporter, event, reason):
+    """Count one skipped row in <store>/state/skips.json, under a held lock:
+    {"<reporter> <event>: <reason>": {count, first, latest}}. Raises like any
+    write (the reporter then records the failure)."""
+    path = d / "state" / SKIPS
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        doc = {}
+    doc = doc if isinstance(doc, dict) else {}
+    key = f"{reporter} {event}: {reason}"
+    old = doc.get(key) if isinstance(doc.get(key), dict) else {}
+    t = iso(config.now())
+    doc[key] = {"count": int(old.get("count", 0)) + 1, "first": old.get("first", t), "latest": t}
+    path.parent.mkdir(exist_ok=True)
+    write_json(path.parent, path.name, doc)
+
+
+def read_skips():
+    """{key: {count, first, latest}}; {} when none is recorded or the file is unreadable."""
+    try:
+        doc = json.loads((config.store_dir() / "state" / SKIPS).read_text())
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
 def read_failures():
     """[{time, reporter, event, error, where}] from both places, oldest first;
     `where` is the file. [] when neither exists."""

@@ -111,8 +111,6 @@
   runs on one machine; a per-host subfolder is the fix if it ever runs on two.
 - **Mutation testing waits on a shared `checks mutants`** (tools/todo td-9)
   rather than a third copy of mutate.py here.
-- **`--json` for `status` and `gate`** is not built; the hub (phase 4) decides
-  whether it wants text or JSON. Hinges on: the hub plan's item 11.
 - **Rule in one place: should `scan()` call tools/transcripts' reader instead
   of copying it? (open, raised 2026-10-05).** Against: scan is incremental
   (byte offset + per-id `seen`, emitting deltas so a later Stop adds only what
@@ -242,15 +240,23 @@
   so this is wording, not drift. A service verb's `key` is checked only at run
   time (unknown, with the reason), never by the gate: no service declares the
   keys it prints.
-- **The store's cli.json is out of date** (`usage status`: "differs"): it lists
-  the verbs, which gained `can-run` (tl-355) and now `bars`. `usage init`
-  rewrites it; not run here (a write to the live store, outside this task).
 
-## Unconfirmed: SubagentStop's transcript is often absent (2026-10-19)
+## SubagentStop's missing transcript is a skip, not a failure (tl-466, 2026-10-20)
 
-- `usage failures`: 772 rows since 2026-10-18, all `stop SubagentStop
-  FileNotFoundError` on `<session>/subagents/agent-<id>.jsonl`; the folder
-  exists and holds other agents' files. Suspicion: the hook fires before the
-  file is written, or for agents that write none (cf. "A subagent's last
-  message may be missed" above). Each is a lost row, traced. Probe: for one
-  failing id, `ls` the path a minute after the failure's time.
+- **Probed 2026-10-20**: failures.tsv held 1,093 rows since 2026-10-18, every
+  one `stop SubagentStop FileNotFoundError` on
+  `<session>/subagents/agent-<id>.jsonl`, 1,093 distinct paths; `ls` of each,
+  hours to two days later: 0 exist (their folder holds 79 other agents'
+  files). So these agents never write the file: nothing to read, nothing lost
+  by the reporter. Now `stop()` counts one skip in `state/skips.json` (`usage
+  failures` prints it) and returns; a main Stop with no transcript stays a
+  failure. Counterfactual: the new `MissingTranscript` test, run on HEAD's
+  reporters.py, fails on the failures.tsv row. Unconfirmed: whether those
+  agents spend tokens no transcript records (which agents are they? the hook
+  input's `agent_type` is not in failures.tsv; probe: `jq` the skipped
+  SubagentStop inputs, which nothing records today).
+- **failures.tsv is full (own bug, Jacob's step)**: 262,346 bytes, past the
+  256 KiB cap, so since 2026-10-20T02:24:52Z no failure is recorded at all,
+  and `usage status` says "write failures: 1093" until it is moved aside.
+  Moving it is a write to the gated live store, not taken here:
+  `mv ~/.claude/usage/failures.tsv ~/.claude/usage-failures-2026-10-20.tsv`.

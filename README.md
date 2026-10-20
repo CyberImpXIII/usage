@@ -19,13 +19,16 @@ only after your `--set <model> ok`.)
 ## Commands
 
 ```
-  usage status                   latest 5h and 7d %, resets, time since the sample
+  usage status [--json]          latest 5h and 7d %, resets, time since the sample. --json: {sampled_at, age_min, stale,
+                                 windows: {5h|7d: {pct, resets_at (epoch), resets_iso}}, ...}; no sample is exit 1, no stdout
   usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
   usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
-  usage gate <tokens>|--todo <id>   exit 0 if <tokens> fit before the window's reset under the burn so far;
+  usage gate <tokens>|--todo <id> [--json]   exit 0 if <tokens> fit before the window's reset under the burn so far;
                                  exit 1 with "hold until <time>" otherwise. The hub's question.
                                  --todo <id>: <tokens> is the todo item's size (usage.json size_tokens, via `todo get`);
-                                 exit 3, unchecked and no number, when it is unsized, L or unreadable
+                                 exit 3, unchecked and no number, when it is unsized, L or unreadable.
+                                 --json: {verdict pass|warn|hold|unknown|unchecked, exit, hold_until (epoch), hold_until_iso,
+                                 window, over, windows, ...}, same exit codes; hold_until/window null unless known
   usage can-run <model> [--no-probe]   may this account run <model> now (PLAN-routing-tree.md §16): ok (exit 0);
                                  hold <until>, credits or refused (exit 1); unknown (exit 3). From models.json in the store,
                                  no record older than usage.json probes.model_ttl_hours used. ok needs your fresh --set ok
@@ -37,7 +40,8 @@ only after your `--set <model> ok`.)
                                  (pct null, the reason given: never 0). Text adds the latest rate_limits keys (the probe)
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
-  usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
+  usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store;
+                                 text adds the skips (not failures: a SubagentStop whose transcript file does not exist)
   usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
   usage calibrate                proposes thresholds from the hits so far; never applies them
   usage check [--json] [--resume]   ./dev.sh check: every part of check.parts.json, through devtools/parts.py
@@ -82,6 +86,22 @@ it), a closed one, a size with no entry, or a todo that cannot answer is exit 3,
 `unknown, unchecked: <why>`, with no number. `tests/test_gate_todo.py` runs the
 real todo CLI on a scratch store (changing the size changes the answer) and a
 stub for the failure paths.
+
+**`usage gate ... --json`** prints the same answer as fields, with the same
+exit code: `verdict` (`pass`, `warn`: exit 0; `hold`, `unknown`: exit 1;
+`unchecked`: exit 3, `tokens` null), `exit`, `line` (the text form's first
+line), `tokens`, `hold_until` (epoch) and `hold_until_iso` (the latest reset
+among the holding windows), `window` (whose reset that is), `over` (the windows
+at hold after the job, or past warn), `sample_age_min`, `warn`, `hold`, and
+`windows` (`{5h|7d: {pct, resets_at, resets_iso, after, pct_per_mtok, basis}}`).
+`hold_until` and `window` are null unless every holding window's reset is
+known; `--todo` adds `todo: {id, size}`. **`usage status --json`** prints
+`sampled_at`, `sampled_iso`, `age_min`, `stale`, `stale_after_min`, `warn`,
+`hold`, `windows` (`{pct, resets_at, resets_iso}` each, null when not
+reported), `store_gate` and `write_failures`; with no sample it is exit 1 and
+nothing on stdout. Both read a sample through `calc.windows_now()`;
+`tests/test_questions.py` (`GateJson`, `StatusJson`) holds the fields, the exit
+codes and the text's agreement.
 
 Weighting by model is not applied: a token of any model counts the same toward
 the ratio (TODO.md).
@@ -174,7 +194,7 @@ tool is inert until someone sets it up.
 | `hits.tsv` | `time`, `session`, `agent_type`, `five_hour_pct`, `seven_day_pct`, `sample_time` (when that sample was taken), `five_hour_resets_at`, `seven_day_resets_at` (that sample's) |
 | `limits.json` | the latest sample, when it was taken, and the raw `rate_limits` object whole |
 | `models.json` | `usage can-run`'s records, `{model: {source: record}}`: `model`, `checked_at`, `result`, `evidence`, `source`, and `until` for a hold (see can-run) |
-| `state/` | one file per transcript: the byte offset read so far and each message's counted usage |
+| `state/` | one file per transcript: the byte offset read so far and each message's counted usage; and `skips.json`, the rows skipped on purpose (see Fails open) |
 | `failures.tsv` | `time`, `reporter`, `event`, `error`: one line per write a reporter could not make (see Fails open) |
 | `cli.json` | the store's gate, written by `usage init`: every file above, the CLI (absolute path) and its verbs |
 
@@ -245,6 +265,15 @@ written. `usage failures` lists both files; `usage status` counts them.
 `tests/test_reporters.py` (`FailureTrace`) holds each path, with the
 counterfactual that a good write leaves no trace anywhere. Not traced: the
 interpreter failing to start (`python3` missing), and both places refusing.
+
+**A skip is not a failure.** A `SubagentStop` whose `agent_transcript_path`
+does not exist has nothing to read (1,093 such rows reached `failures.tsv` by
+2026-10-20; none of those files existed later), so it writes no row and is
+counted in `state/skips.json` (`store.record_skip()`: one key per reporter,
+event and reason, with `count`, `first`, `latest`), which `usage failures`
+prints after the failures. A main `Stop` with no transcript is still a
+failure. `tests/test_reporters.py` (`MissingTranscript`) holds both, with the
+counterfactual that a present file is read and not skipped.
 
 ## Registration
 

@@ -115,6 +115,54 @@ class StopDelta(Case):
         self.assertEqual(total, EXPECTED["per_run"][0])
 
 
+class MissingTranscript(Case):
+    """A SubagentStop whose transcript file does not exist (tl-466: 1,093
+    FileNotFoundError rows in failures.tsv, none of the files present later)
+    is one skipped row, counted in state/skips.json, not a failure."""
+
+    def data(self, path, event="SubagentStop"):
+        d = {"session_id": "s", "hook_event_name": event, "agent_type": "a", "transcript_path": str(self.tmp / "m")}
+        d["agent_transcript_path" if event == "SubagentStop" else "transcript_path"] = str(path)
+        return d
+
+    def skips(self):
+        p = self.store / "state" / "skips.json"
+        return json.loads(p.read_text()) if p.exists() else {}
+
+    def test_a_missing_subagent_transcript_is_one_skipped_row_not_a_failure(self):
+        gone = self.tmp / "subagents" / "agent-x.jsonl"
+        r = self.script("stop", self.data(gone), now="2026-10-05T10:00:00Z")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertFalse((self.store / "failures.tsv").exists(), (self.store / "failures.tsv").exists()
+                         and (self.store / "failures.tsv").read_text())
+        self.assertFalse((self.tmp / "store-failures.tsv").exists())
+        self.assertFalse((self.store / "tokens.tsv").exists())
+        key = "stop SubagentStop: no transcript file"
+        self.assertEqual(self.skips(), {key: {"count": 1, "first": "2026-10-05T10:00:00Z",
+                                              "latest": "2026-10-05T10:00:00Z"}})
+        self.script("stop", self.data(gone), now="2026-10-05T10:01:00Z")
+        self.assertEqual(self.skips()[key]["count"], 2, "each skip is counted")
+        out = self.cli("failures").stdout
+        self.assertIn("no write failures recorded", out)
+        self.assertIn(f"skipped, not failures: {key}: 2 since 2026-10-05T10:00:00Z, latest 2026-10-05T10:01:00Z", out)
+        self.assertEqual(json.loads(self.cli("failures", "--json").stdout), [])
+        self.assertNotIn("write failures", self.cli("status").stdout)
+
+    def test_counterfactual_the_file_present_is_read_and_not_skipped(self):
+        present = self.tmp / "agent.jsonl"
+        shutil.copy(TURNS[0], present)
+        self.script("stop", self.data(present), now=EXPECTED["run_at"][0])
+        self.assertEqual(len(self.rows("tokens.tsv")), 1)
+        self.assertEqual(self.skips(), {})
+
+    def test_a_main_stop_with_no_transcript_is_still_a_failure(self):
+        self.script("stop", self.data(self.tmp / "gone.jsonl", event="Stop"), now="2026-10-05T10:00:00Z")
+        rows = FailureTrace.trace(self)
+        self.assertEqual([(x["reporter"], x["event"]) for x in rows], [("stop", "Stop")])
+        self.assertTrue(rows[0]["error"].startswith("FileNotFoundError"), rows)
+        self.assertEqual(self.skips(), {})
+
+
 class FailureFilter(Case):
     def test_rate_limit_appends_a_hit_with_the_preceding_sample(self):
         self.script("statusline", statusline_input(88.0, 40.0), now="2026-10-05T10:00:00Z")

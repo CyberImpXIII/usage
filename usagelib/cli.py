@@ -18,13 +18,16 @@ from pathlib import Path
 from . import bars, calc, config, datarepo, export, models, store, todo
 
 HELP = """\
-  usage status                   latest 5h and 7d %, resets, time since the sample
+  usage status [--json]          latest 5h and 7d %, resets, time since the sample. --json: {sampled_at, age_min, stale,
+                                 windows: {5h|7d: {pct, resets_at (epoch), resets_iso}}, ...}; no sample is exit 1, no stdout
   usage burn [--window 5h|7d]    % per hour over the last N samples (default 12), and tokens per hour from tokens.tsv
   usage project [--threshold P]  at the current burn, when each window reaches P (default: hold)
-  usage gate <tokens>|--todo <id>   exit 0 if <tokens> fit before the window's reset under the burn so far;
+  usage gate <tokens>|--todo <id> [--json]   exit 0 if <tokens> fit before the window's reset under the burn so far;
                                  exit 1 with "hold until <time>" otherwise. The hub's question.
                                  --todo <id>: <tokens> is the todo item's size (usage.json size_tokens, via `todo get`);
-                                 exit 3, unchecked and no number, when it is unsized, L or unreadable
+                                 exit 3, unchecked and no number, when it is unsized, L or unreadable.
+                                 --json: {verdict pass|warn|hold|unknown|unchecked, exit, hold_until (epoch), hold_until_iso,
+                                 window, over, windows, ...}, same exit codes; hold_until/window null unless known
   usage can-run <model> [--no-probe]   may this account run <model> now (PLAN-routing-tree.md §16): ok (exit 0);
                                  hold <until>, credits or refused (exit 1); unknown (exit 3). From models.json in the store,
                                  no record older than usage.json probes.model_ttl_hours used. ok needs your fresh --set ok
@@ -36,7 +39,8 @@ HELP = """\
                                  (pct null, the reason given: never 0). Text adds the latest rate_limits keys (the probe)
   usage hits [--since D] [--json]   rate-limit hits with the sample that preceded each; flags one below the hold threshold.
                                  --json: [{"t", "session", "resets_at", ...}], resets_at null unless one window was at hold
-  usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store
+  usage failures [--json]        the reporters' failed writes (rows they could not record), from failures.tsv in or beside the store;
+                                 text adds the skips (not failures: a SubagentStop whose transcript file does not exist)
   usage tokens [--since D] [--by agent|model|session]   tokens per agent type, model or session, from the ledger instead of the transcripts
   usage calibrate                proposes thresholds from the hits so far; never applies them
   usage check [--json] [--resume]   ./dev.sh check: every part of check.parts.json, through devtools/parts.py
@@ -79,22 +83,40 @@ def _since(v):
     return v
 
 
+# `usage status --json` prints these fields, every one present (null when not known).
+STATUS_FIELDS = ("sampled_at", "sampled_iso", "age_min", "stale", "stale_after_min", "warn", "hold", "windows",
+                 "store_gate", "write_failures")
+
+
 def cmd_status(args):
-    _opts(args, ())
+    as_json = _json_flag(args)
     sample, at = calc.latest()
     if sample is None:
+        if as_json:  # no sample is "not known": exit 1, nothing on stdout (as hits/bars --json)
+            sys.stderr.write("usage status: no sample yet: the status line has not run with rate_limits "
+                             f"(or no store at {config.store_dir()}: usage init)\n")
+            return 1
         print("no sample yet: the status line has not run with rate_limits (or the store is missing: usage init)")
         _store_notes()
         return 1
     age = (config.now() - at) / 60 if at is not None else None
     stale = config.setting("sample_stale_minutes")
-    for label, key in calc.WINDOW_KEYS.items():
-        p = sample.get(f"{key}_pct")
-        r = sample.get(f"{key}_resets_at")
-        if p is None:
+    wins = calc.windows_now(sample)
+    if as_json:
+        gate, fails = _store_state()
+        doc = {"sampled_at": at, "sampled_iso": store.iso(at) if at is not None else None,
+               "age_min": round(age, 1) if age is not None else None,
+               "stale": age > stale if age is not None else None, "stale_after_min": stale,
+               "warn": config.setting("warn"), "hold": config.setting("hold"), "windows": wins,
+               "store_gate": gate, "write_failures": len(fails)}
+        print(json.dumps({k: doc[k] for k in STATUS_FIELDS}, indent=2))
+        return 0
+    for label, w in wins.items():
+        if w["pct"] is None:
             print(f"{label}: not reported")
             continue
-        print(f"{label}: {p:.1f}%  resets {_local(r)}  (warn {config.setting('warn')}, hold {config.setting('hold')})")
+        print(f"{label}: {w['pct']:.1f}%  resets {_local(w['resets_at'])}  "
+              f"(warn {config.setting('warn')}, hold {config.setting('hold')})")
     if age is None:
         print("sampled: unknown time")
     else:
@@ -103,13 +125,17 @@ def cmd_status(args):
     return 0
 
 
+def _store_state():
+    """(the store's gate: current|missing|differs|None, the recorded write failures)."""
+    return store.contract_state(CLI_PATH, COMMANDS), store.read_failures()
+
+
 def _store_notes():
     """What `status` adds about the store itself: an ungated store, and
     recorded write failures (rows the reporters lost)."""
-    gate = store.contract_state(CLI_PATH, COMMANDS)
+    gate, fails = _store_state()
     if gate in ("missing", "differs"):
         print(f"store gate: {store.CONTRACT} {gate} in {config.store_dir()} -- run `usage init`")
-    fails = store.read_failures()
     if fails:
         print(f"write failures: {len(fails)} recorded, latest {fails[-1]['time']} ({fails[-1]['reporter']}) "
               "-- `usage failures`")
@@ -148,27 +174,41 @@ def cmd_project(args):
     return 0
 
 
-UNCHECKED = 3  # gate --todo: no estimate, so no answer (never a number)
+def _strip_json(args):
+    """(args without one --json, whether it was given); two is a usage error."""
+    rest = [a for a in args if a != "--json"]
+    if len(args) - len(rest) > 1:
+        raise SystemExit(_usage_error("--json given twice"))
+    return rest, len(rest) < len(args)
 
 
 def cmd_gate(args):
-    note = None
+    args, as_json = _strip_json(args)
+    todo_field = None
     if len(args) == 2 and args[0] == "--todo" and args[1] and not args[1].startswith("-"):
         rec, why = todo.get(args[1])
         tokens, size, why = todo.estimate(rec) if rec is not None else (None, None, why)
+        rid = rec.get("id", args[1]) if rec is not None else args[1]
+        todo_field = {"id": rid, "size": size}
         if tokens is None:
-            print(f"unknown, unchecked: {why}")
-            return UNCHECKED
-        note = f"estimate: todo:{rec['id']} size {size} = {tokens} tokens (usage.json size_tokens)"
+            g = calc.gate_result(None, "unchecked", calc.UNCHECKED, f"unknown, unchecked: {why}")
+        else:
+            g = calc.gate(tokens)
+            g["detail"].insert(0, f"estimate: todo:{rid} size {size} = {tokens} tokens (usage.json size_tokens)")
     elif len(args) == 1 and args[0].isdigit():
-        tokens = int(args[0])
+        g = calc.gate(int(args[0]))
     else:
-        return _usage_error("gate <tokens>, a whole number, or gate --todo <id>")
-    code, line, detail = calc.gate(tokens)
-    print(line)
-    for d in ([note] if note else []) + detail:
+        return _usage_error("gate <tokens>, a whole number, or gate --todo <id> (either with --json)")
+    if as_json:
+        out = {k: g[k] for k in calc.GATE_FIELDS}
+        if todo_field is not None:
+            out["todo"] = todo_field
+        print(json.dumps(out, indent=2))
+        return g["exit"]
+    print(g["line"])
+    for d in g["detail"]:
         print(f"  {d}")
-    return code
+    return g["exit"]
 
 
 def cmd_can_run(args):
@@ -292,11 +332,14 @@ def cmd_failures(args):
         return 0
     if not rows:
         print("no write failures recorded")
-        return 0
     for r in rows:
         print(f"{r['time']}  {r['reporter'] or '-':10}  {r['event'] or '-':13}  {r['error']}")
-    places = sorted({r["where"] for r in rows})
-    print(f"{len(rows)} failure(s), in {', '.join(places)}")
+    if rows:
+        places = sorted({r["where"] for r in rows})
+        print(f"{len(rows)} failure(s), in {', '.join(places)}")
+    for key, s in sorted(store.read_skips().items()):
+        if isinstance(s, dict):
+            print(f"skipped, not failures: {key}: {s.get('count')} since {s.get('first')}, latest {s.get('latest')}")
     return 0
 
 

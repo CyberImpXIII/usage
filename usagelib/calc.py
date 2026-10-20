@@ -130,46 +130,98 @@ def latest():
     return j["sample"], (at if isinstance(at, (int, float)) else None)
 
 
+def windows_now(sample):
+    """{label: {pct, resets_at, resets_iso}} of one sample, every window of
+    WINDOW_KEYS present; a value not reported, or not a finite number, is None
+    (never 0). `usage status` and the gate read a sample only through this."""
+    out = {}
+    for label, key in WINDOW_KEYS.items():
+        r = _f(sample.get(f"{key}_resets_at"))
+        r = int(r) if r is not None else None
+        out[label] = {"pct": _f(sample.get(f"{key}_pct")), "resets_at": r,
+                      "resets_iso": store.iso(r) if r is not None else None}
+    return out
+
+
+# `usage gate --json` prints these fields, every one present (null when not known).
+GATE_FIELDS = ("verdict", "exit", "line", "tokens", "hold_until", "hold_until_iso", "window", "over",
+               "sample_age_min", "warn", "hold", "windows")
+UNCHECKED = 3  # gate --todo: no estimate, so no answer (never a number)
+
+
+def gate_result(tokens, verdict, code, line):
+    """The gate's answer before any window is read; gate() fills it in."""
+    return {"verdict": verdict, "exit": code, "line": line, "detail": [], "tokens": tokens, "hold_until": None,
+            "hold_until_iso": None, "window": None, "over": [], "sample_age_min": None,
+            "warn": config.setting("warn"), "hold": config.setting("hold"), "windows": {}}
+
+
 def gate(tokens):
-    """(code, line, detail lines). 0 pass, 1 hold (stale or unknown included)."""
+    """The verdict as fields; cli.py prints `line` and `detail` (text) or
+    GATE_FIELDS (--json). verdict: pass or warn (exit 0); hold, or unknown
+    when there is no fresh sample or no measured %/token (exit 1).
+    over: the windows at or past hold after the job (warn: past warn).
+    hold_until (epoch) and window: the reset the hold waits for (the latest of
+    the holding windows' resets) and its window; both null unless every
+    holding window's reset is known (prefer null to a guess).
+    windows: {label: {pct, resets_at, resets_iso, after, pct_per_mtok, basis}},
+    after/pct_per_mtok/basis null for a window not reported."""
+    g = gate_result(tokens, "unknown", 1, None)
+    warn, hold = g["warn"], g["hold"]
+
+    def unknown(why):
+        g["line"] = f"unknown, hold: {why}"
+        return g
+
     sample, at = latest()
     stale = config.setting("sample_stale_minutes")
     if sample is None or at is None:
-        return 1, "unknown, hold: no status-line sample yet", []
+        return unknown("no status-line sample yet")
     age_min = (config.now() - at) / 60
+    g["sample_age_min"] = round(age_min, 1)
     if age_min > stale:
-        return 1, f"unknown, hold: the last sample is {age_min:.0f} min old (stale after {stale})", []
-    warn, hold = config.setting("warn"), config.setting("hold")
-    holds, warns, detail, seen = [], [], [], 0
-    for label, key in WINDOW_KEYS.items():
-        p = _f(sample.get(f"{key}_pct"))
+        return unknown(f"the last sample is {age_min:.0f} min old (stale after {stale})")
+    holds, warns, detail, seen = [], [], g["detail"], 0
+    for label, w in windows_now(sample).items():
+        g["windows"][label] = w = dict(w, after=None, pct_per_mtok=None, basis=None)
+        p = w["pct"]
         if p is None:
             detail.append(f"{label}: not reported")
             continue
         seen += 1
-        resets = _f(sample.get(f"{key}_resets_at"))
         ratio, basis = pct_per_token(label)
+        w["basis"] = basis
         if ratio is None:
-            return 1, f"unknown, hold: {label} has no measured %/token ({basis})", detail
+            return unknown(f"{label} has no measured %/token ({basis})")
         after = p + tokens * ratio
+        w["after"], w["pct_per_mtok"] = after, ratio * 1e6
         detail.append(f"{label}: {p:.1f}% now, ~{after:.1f}% after {tokens:,} tokens "
                       f"({ratio * 1e6:.4f}% per 1M, {basis})")
         if p >= hold or after >= hold:
-            holds.append((label, resets))
+            holds.append((label, w["resets_at"]))
         elif after >= warn:
             warns.append(label)
     if not seen:
-        return 1, "unknown, hold: the sample reports no window", detail
+        return unknown("the sample reports no window")
     if holds:
+        g["verdict"], g["over"] = "hold", [lb for lb, _ in holds]
         times = [r for _, r in holds if r is not None]
-        names = ", ".join(lb for lb, _ in holds)
+        names = ", ".join(g["over"])
         if len(times) < len(holds):
-            return 1, f"hold ({names} would reach hold {hold}%; reset time unknown)", detail
+            g["line"] = f"hold ({names} would reach hold {hold}%; reset time unknown)"
+            return g
         until = max(times)
-        return 1, f"hold until {store.iso(until)} ({names} would reach hold {hold}%)", detail
+        g["hold_until"], g["hold_until_iso"] = until, store.iso(until)
+        g["window"] = next(lb for lb, r in holds if r == until)
+        g["line"] = f"hold until {store.iso(until)} ({names} would reach hold {hold}%)"
+        return g
+    g["exit"] = 0
     if warns:
-        return 0, f"pass, warn: {', '.join(warns)} past warn {warn}% after this job", detail
-    return 0, "pass", detail
+        g["verdict"], g["over"] = "warn", warns
+        g["line"] = f"pass, warn: {', '.join(warns)} past warn {warn}% after this job"
+        return g
+    g["verdict"], g["line"] = "pass", "pass"
+    return g
 
 
 def hits(since=None):

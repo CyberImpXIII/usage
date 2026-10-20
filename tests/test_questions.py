@@ -8,20 +8,25 @@ R5 = "2026-10-05T15:00:00Z"
 R7 = "2026-10-12T09:00:00Z"
 
 
-class KnownSlope(Case):
+def known_slope(case):
     """5h rises 10 points an hour (40% at 10:00, 50% at 11:00), with 1,000,000
-    turn tokens in that hour: 1e-5 % per token. 7d rises 1 point an hour."""
+    turn tokens in that hour: 1e-5 % per token. 7d rises 1 point an hour: 1e-6."""
+    case.put_samples([("2026-10-05T10:00:00Z", 40, 20, R5, R7),
+                      ("2026-10-05T10:30:00Z", 45, 20.5, R5, R7),
+                      ("2026-10-05T11:00:00Z", 50, 21, R5, R7)])
+    case.put_tokens([("2026-10-05T10:20:00Z", "a", 600000, "turn"),
+                     ("2026-10-05T10:50:00Z", "b", 400000, "turn"),
+                     ("2026-10-05T10:55:00Z", "c", 9000000, "backlog")])
+    case.put_limits("2026-10-05T11:00:00Z", 50, 21, R5, R7)
+    case.now = "2026-10-05T11:05:00Z"
+
+
+class KnownSlope(Case):
+    __doc__ = known_slope.__doc__
 
     def setUp(self):
         super().setUp()
-        self.put_samples([("2026-10-05T10:00:00Z", 40, 20, R5, R7),
-                          ("2026-10-05T10:30:00Z", 45, 20.5, R5, R7),
-                          ("2026-10-05T11:00:00Z", 50, 21, R5, R7)])
-        self.put_tokens([("2026-10-05T10:20:00Z", "a", 600000, "turn"),
-                         ("2026-10-05T10:50:00Z", "b", 400000, "turn"),
-                         ("2026-10-05T10:55:00Z", "c", 9000000, "backlog")])
-        self.put_limits("2026-10-05T11:00:00Z", 50, 21, R5, R7)
-        self.now = "2026-10-05T11:05:00Z"
+        known_slope(self)
 
     def test_burn_is_the_arithmetic_slope_and_ignores_backlog(self):
         out = self.cli("burn", "--window", "5h").stdout
@@ -90,6 +95,109 @@ class KnownSlope(Case):
         self.assertEqual(self.cli("burn", "--window", "1d").returncode, 2)
         self.assertEqual(self.cli("hits", "--since", "yesterday").returncode, 2)
         self.assertEqual(self.cli("nonsense").returncode, 2)
+
+
+class GateJson(Case):
+    """`usage gate <tokens> --json`: the verdict, the hold-until time and the
+    window as fields; the exit code is the text form's, and `line` is its first line."""
+
+    def setUp(self):
+        super().setUp()
+        known_slope(self)
+
+    def gate(self, tokens, **kw):
+        text, r = self.cli("gate", str(tokens), **kw), self.cli("gate", str(tokens), "--json", **kw)
+        doc = json.loads(r.stdout)
+        self.assertEqual(r.returncode, text.returncode, "--json changed the exit code")
+        self.assertEqual((doc["exit"], doc["line"]), (r.returncode, text.stdout.splitlines()[0]))
+        from usagelib import calc
+        self.assertEqual(tuple(doc), calc.GATE_FIELDS)
+        return doc
+
+    def test_pass(self):
+        d = self.gate(1000000)
+        self.assertEqual((d["verdict"], d["hold_until"], d["window"], d["over"]), ("pass", None, None, []))
+        w = d["windows"]["5h"]
+        self.assertEqual((w["pct"], w["resets_at"], w["resets_iso"], w["basis"]), (50.0, epoch(R5), R5, "this window"))
+        self.assertAlmostEqual(w["after"], 60.0)
+        self.assertAlmostEqual(w["pct_per_mtok"], 10.0)
+        self.assertEqual((d["tokens"], d["sample_age_min"], d["warn"], d["hold"]), (1000000, 5.0, 75, 90))
+
+    def test_warn(self):
+        d = self.gate(3000000)  # 5h 80%
+        self.assertEqual((d["verdict"], d["exit"], d["over"], d["hold_until"]), ("warn", 0, ["5h"], None))
+
+    def test_hold_names_the_reset_and_its_window(self):
+        d = self.gate(4500000)  # 5h 95%
+        self.assertEqual((d["verdict"], d["exit"]), ("hold", 1))
+        self.assertEqual((d["hold_until"], d["hold_until_iso"], d["window"], d["over"]), (epoch(R5), R5, "5h", ["5h"]))
+
+    def test_the_tokens_change_the_window(self):
+        """70,000,000 tokens: 7d reaches 91% too, so the hold waits for 7d's later reset."""
+        d = self.gate(70000000)
+        self.assertEqual((d["hold_until_iso"], d["window"], d["over"]), (R7, "7d", ["5h", "7d"]))
+
+    def test_an_unknown_reset_is_null_not_a_guess(self):
+        self.put_limits("2026-10-05T11:00:00Z", 50, 21, None, R7)
+        d = self.gate(4500000)
+        self.assertEqual((d["verdict"], d["over"], d["hold_until"], d["hold_until_iso"], d["window"]),
+                         ("hold", ["5h"], None, None, None))
+        self.assertIsNone(d["windows"]["5h"]["resets_at"])
+
+    def test_stale_and_no_sample_are_unknown(self):
+        d = self.gate(1, now="2026-10-05T11:16:00Z")
+        self.assertEqual((d["verdict"], d["exit"], d["sample_age_min"], d["windows"]), ("unknown", 1, 16.0, {}))
+        (self.store / "limits.json").unlink()
+        d = self.gate(1)
+        self.assertEqual((d["verdict"], d["exit"], d["sample_age_min"]), ("unknown", 1, None))
+
+    def test_bad_arguments_are_usage_errors(self):
+        for args in (["--json"], ["5", "--json", "--json"], ["lots", "--json"]):
+            r = self.cli("gate", *args)
+            self.assertEqual((r.returncode, r.stdout), (2, ""), args)
+
+
+class StatusJson(Case):
+    """`usage status --json`: each window's pct, reset epoch and ISO time."""
+
+    def setUp(self):
+        super().setUp()
+        known_slope(self)
+
+    def status(self, **kw):
+        r = self.cli("status", "--json", **kw)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        from usagelib import cli
+        doc = json.loads(r.stdout)
+        self.assertEqual(tuple(doc), cli.STATUS_FIELDS)
+        return doc
+
+    def test_the_windows(self):
+        d = self.status()
+        self.assertEqual(d["windows"], {"5h": {"pct": 50.0, "resets_at": epoch(R5), "resets_iso": R5},
+                                        "7d": {"pct": 21.0, "resets_at": epoch(R7), "resets_iso": R7}})
+        self.assertEqual((d["sampled_at"], d["sampled_iso"], d["age_min"], d["stale"], d["stale_after_min"]),
+                         (epoch("2026-10-05T11:00:00Z"), "2026-10-05T11:00:00Z", 5.0, False, 15))
+        self.assertEqual((d["store_gate"], d["write_failures"]), ("missing", 0))
+        # the text form says the same numbers
+        self.assertTrue(self.cli("status").stdout.startswith("5h: 50.0%  resets Mon 15:00"))
+
+    def test_the_sample_changes_the_output(self):
+        self.put_limits("2026-10-05T11:00:00Z", 62.5, None, R5, None)
+        d = self.status(now="2026-10-05T11:20:00Z")
+        self.assertEqual(d["windows"]["5h"]["pct"], 62.5)
+        self.assertEqual(d["windows"]["7d"], {"pct": None, "resets_at": None, "resets_iso": None})
+        self.assertEqual((d["age_min"], d["stale"]), (20.0, True))
+
+    def test_no_sample_is_exit_1_and_no_stdout(self):
+        (self.store / "limits.json").unlink()
+        r = self.cli("status", "--json")
+        self.assertEqual((r.returncode, r.stdout), (1, ""))
+        self.assertIn("no sample yet", r.stderr)
+
+    def test_bad_arguments_are_usage_errors(self):
+        self.assertEqual(self.cli("status", "--jsn").returncode, 2)
+        self.assertEqual(self.cli("status", "--json", "--json").returncode, 2)
 
 
 class HitsCalibrate(Case):
