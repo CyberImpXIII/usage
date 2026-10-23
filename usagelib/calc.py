@@ -1,19 +1,24 @@
 """The questions asked of the store: burn, projection, the gate, hits and the
 calibration proposal. Pure functions over rows; cli.py prints them.
 
-A window's samples are cut into instances: a new instance starts where the
-percentage drops, or where a row's time has passed the previous row's
-resets_at. Burn and %-per-token are measured inside one instance only.
+A window's samples are cut into instances, one per window: see instances().
+Burn and %-per-token are measured inside one instance only.
 
-Tokens are input + output + cache read + cache write of `turn` rows (never
-`backlog`: those were counted when a transcript was first seen, at a time
-that is not when they were spent).
+Tokens are TOKEN_UNIT, input + output + cache read + cache write, of `turn`
+rows (never `backlog`: those were counted when a transcript was first seen, at
+a time that is not when they were spent). `usage gate <tokens>` takes a job in
+the same unit and names it in --json (`unit`), so a caller can check that it
+sums the same parts.
 """
 import math
 
 from . import config, store
 
 WINDOW_KEYS = {"5h": "five_hour", "7d": "seven_day"}
+# The parts a token count sums, in tokens.tsv's column names: the ratio is
+# measured in this unit, and the gate's `unit` field names it.
+TOKEN_PARTS = ("input", "output", "cache_read", "cache_write")
+TOKEN_UNIT = "+".join(TOKEN_PARTS)
 
 
 def _f(v):
@@ -37,23 +42,39 @@ def samples(key):
 
 
 def instances(rows):
-    segs = []
+    """[[(t, pct, resets_at)]], one list per window instance, ordered by first
+    sample. A sample that carries resets_at belongs to the instance of that
+    resets_at (constant within a window: samples.tsv since 2026-10-18), and
+    within it a window's percentage never falls, so a sample below the highest
+    kept so far is left out: another session's status line reporting the
+    rate_limits of its own last response, which lags (tl-578: two sessions
+    flipping 19, 4, 19 under one resets_at). A sample whose resets_at has
+    already passed reports a window that is over, and is left out too. A
+    sample with no resets_at falls back to the drop rule among its kind: a new
+    instance starts where the percentage drops."""
+    keyed, loose = {}, []
     for row in rows:
-        if segs:
-            prev = segs[-1][-1]
-            new = row[1] < prev[1] or (prev[2] is not None and row[0] >= prev[2])
-            if not new:
-                segs[-1].append(row)
-                continue
-        segs.append([row])
-    return segs
+        t, p, r = row
+        if r is None:
+            if loose and p >= loose[-1][-1][1]:
+                loose[-1].append(row)
+            else:
+                loose.append([row])
+            continue
+        if t >= r:
+            continue
+        seg = keyed.setdefault(r, [])
+        if seg and p < seg[-1][1]:
+            continue
+        seg.append(row)
+    return sorted([*keyed.values(), *loose], key=lambda s: s[0][0])
 
 
 def token_rows():
     out = []
     for r in store.read("tokens.tsv"):
         t = store.epoch(r["time"])
-        vals = [_f(r[c]) for c in ("input", "output", "cache_read", "cache_write")]
+        vals = [_f(r[c]) for c in TOKEN_PARTS]
         if t is None or any(v is None for v in vals):
             continue
         out.append({"t": t, "session": r["session"], "agent_type": r["agent_type"], "model": r["model"],
@@ -144,14 +165,15 @@ def windows_now(sample):
 
 
 # `usage gate --json` prints these fields, every one present (null when not known).
-GATE_FIELDS = ("verdict", "exit", "line", "tokens", "hold_until", "hold_until_iso", "window", "over",
+GATE_FIELDS = ("verdict", "exit", "line", "tokens", "unit", "hold_until", "hold_until_iso", "window", "over",
                "sample_age_min", "warn", "hold", "windows")
 UNCHECKED = 3  # gate --todo: no estimate, so no answer (never a number)
 
 
 def gate_result(tokens, verdict, code, line):
     """The gate's answer before any window is read; gate() fills it in."""
-    return {"verdict": verdict, "exit": code, "line": line, "detail": [], "tokens": tokens, "hold_until": None,
+    return {"verdict": verdict, "exit": code, "line": line, "detail": [], "tokens": tokens, "unit": TOKEN_UNIT,
+            "hold_until": None,
             "hold_until_iso": None, "window": None, "over": [], "sample_age_min": None,
             "warn": config.setting("warn"), "hold": config.setting("hold"), "windows": {}}
 

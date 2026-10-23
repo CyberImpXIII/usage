@@ -157,6 +157,95 @@ class GateJson(Case):
             self.assertEqual((r.returncode, r.stdout), (2, ""), args)
 
 
+class Unit(Case):
+    """tl-578: the gate's tokens are one named unit, input + output + cache read
+    + cache write, the parts the ratio is measured in; `--json` names it, so a
+    caller (the release job) can check that its estimate sums the same parts."""
+
+    def setUp(self):
+        super().setUp()
+        known_slope(self)
+
+    def put_parts(self, parts_a, parts_b):
+        lines = ["time\tsession\tagent_type\tmodel\tinput\toutput\tcache_read\tcache_write\tbasis"]
+        for t, parts in (("2026-10-05T10:20:00Z", parts_a), ("2026-10-05T10:50:00Z", parts_b)):
+            lines.append("\t".join([t, "s1", "a", "claude-opus-5-5", *map(str, parts), "turn"]))
+        (self.store / "tokens.tsv").write_text("\n".join(lines) + "\n")
+
+    def mtok(self):
+        return json.loads(self.cli("gate", "1", "--json").stdout)["windows"]["5h"]["pct_per_mtok"]
+
+    def test_the_unit_is_named_and_is_the_ledger_columns(self):
+        from usagelib import calc, store
+        d = json.loads(self.cli("gate", "1", "--json").stdout)
+        self.assertEqual(d["unit"], "input+output+cache_read+cache_write")
+        self.assertEqual(d["unit"].split("+"), list(calc.TOKEN_PARTS))
+        self.assertTrue(set(calc.TOKEN_PARTS) <= set(store.COLUMNS["tokens.tsv"]))
+        self.assertIn("unit", calc.GATE_FIELDS)
+
+    def test_every_part_counts(self):
+        """1,000,000 tokens split over the four columns gives the same ratio as
+        1,000,000 input tokens; leaving out any one part changes it."""
+        self.put_parts((100000, 100000, 300000, 100000), (100000, 100000, 100000, 100000))
+        self.assertAlmostEqual(self.mtok(), 10.0)
+        for i in range(4):
+            a = [100000, 100000, 300000, 100000]
+            b = [100000, 100000, 100000, 100000]
+            a[i] = b[i] = 0
+            self.put_parts(a, b)
+            self.assertNotAlmostEqual(self.mtok(), 10.0, msg=f"part {i} did not count")
+
+    def test_an_unchecked_answer_names_the_unit_too(self):
+        from usagelib import calc
+        self.assertEqual(calc.gate_result(None, "unchecked", 3, "x")["unit"], calc.TOKEN_UNIT)
+
+
+class StaleSamples(Case):
+    """tl-578: two sessions' status lines interleave, each reporting its own
+    last response's rate_limits, so one window's samples flip (50, 31, 50).
+    Within one resets_at a window never falls: a lower sample is stale and is
+    left out, not a new window; the gate answers as on the clean samples."""
+
+    def setUp(self):
+        super().setUp()
+        known_slope(self)
+
+    def answer(self, tokens=1000000):
+        d = json.loads(self.cli("gate", str(tokens), "--json").stdout)
+        return d["verdict"], round(d["windows"]["5h"]["pct_per_mtok"], 6), d["windows"]["5h"]["basis"]
+
+    def test_a_lower_sample_under_one_reset_is_stale(self):
+        clean = self.answer()
+        self.assertEqual(clean, ("pass", 10.0, "this window"))
+        # the drop rule read 31 -> 50 over the 400,000 tokens after 10:40 as a
+        # new window: 47.5 % per 1M, so 1,000,000 tokens -> 97.5%, a hold
+        self.put_samples([("2026-10-05T10:00:00Z", 40, 20, R5, R7),
+                          ("2026-10-05T10:10:00Z", 30, 19, R5, R7),
+                          ("2026-10-05T10:30:00Z", 45, 20.5, R5, R7),
+                          ("2026-10-05T10:40:00Z", 31, 19, R5, R7),
+                          ("2026-10-05T11:00:00Z", 50, 21, R5, R7)])
+        self.assertEqual(self.answer(), clean)
+        self.assertIn("5h: 10.00 %/h", self.cli("burn", "--window", "5h").stdout)
+
+    def test_a_sample_of_a_window_already_reset_is_stale(self):
+        """After the 15:00 reset a session still reports the old window (95%,
+        resets 15:00): it is over, so it neither joins nor starts a window."""
+        rows = [("2026-10-05T15:10:00Z", 2, 22, "2026-10-05T20:10:00Z", R7),
+                ("2026-10-05T16:10:00Z", 8, 23, "2026-10-05T20:10:00Z", R7)]
+        self.put_samples(rows)
+        before = self.cli("burn", "--window", "5h").stdout
+        self.put_samples([rows[0], ("2026-10-05T15:40:00Z", 95, 21, R5, R7), rows[1]])
+        self.assertEqual(self.cli("burn", "--window", "5h").stdout, before)
+        self.assertIn("5h: 6.00 %/h", before)
+
+    def test_with_no_reset_a_drop_still_starts_a_window(self):
+        self.put_samples([("2026-10-05T10:00:00Z", 40, 20, None, R7),
+                          ("2026-10-05T11:00:00Z", 50, 21, None, R7),
+                          ("2026-10-05T12:00:00Z", 2, 22, None, R7),
+                          ("2026-10-05T13:00:00Z", 8, 23, None, R7)])
+        self.assertIn("5h: 6.00 %/h", self.cli("burn", "--window", "5h").stdout)
+
+
 class StatusJson(Case):
     """`usage status --json`: each window's pct, reset epoch and ISO time."""
 

@@ -67,8 +67,18 @@ dispatch table, both ways, and checks every command the plan lists exists.
   the `turn` tokens recorded in the same span, from the current window when it
   shows both, else from every window on record. With neither, the answer is
   `unknown, hold` (exit 1).
+- **A window is its `resets_at`** (`calc.instances()`): a sample belongs to the
+  window its reset names, and inside one a percentage never falls, so a lower
+  sample is another session's status line reporting its own last response's
+  `rate_limits`, which lags, and is left out; so is a sample whose reset has
+  passed. Only a sample with no reset falls back to "a drop starts a new
+  window". (tl-578: under the drop rule, two sessions flipping 19, 4, 19 cut
+  one 7d window into 76 pieces and summed each flip back up as a rise, 9.38%
+  per 1M instead of 0.157%.)
 - A job's tokens are input + output + cache read + cache write, the same sum the
-  ratio is measured in.
+  ratio is measured in; `--json` names it as `unit`,
+  `input+output+cache_read+cache_write` (`calc.TOKEN_UNIT`), so a caller can
+  check its estimate sums the same parts (`tests/test_questions.py`, `Unit`).
 - **hold** (exit 1, `hold until <reset, UTC>`): a window is already at `hold`,
   or would reach it after the job. **pass, warn** (exit 0): past `warn` after the
   job. **pass** (exit 0): below both.
@@ -90,7 +100,7 @@ stub for the failure paths.
 **`usage gate ... --json`** prints the same answer as fields, with the same
 exit code: `verdict` (`pass`, `warn`: exit 0; `hold`, `unknown`: exit 1;
 `unchecked`: exit 3, `tokens` null), `exit`, `line` (the text form's first
-line), `tokens`, `hold_until` (epoch) and `hold_until_iso` (the latest reset
+line), `tokens`, `unit`, `hold_until` (epoch) and `hold_until_iso` (the latest reset
 among the holding windows), `window` (whose reset that is), `over` (the windows
 at hold after the job, or past warn), `sample_age_min`, `warn`, `hold`, and
 `windows` (`{5h|7d: {pct, resets_at, resets_iso, after, pct_per_mtok, basis}}`).

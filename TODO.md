@@ -133,6 +133,30 @@
   toward %/token. Revisit if calibrate shows the ratio swinging with the model
   mix.
 
+- **The gate's %/token was 60x high: interleaved stale samples (tl-578,
+  2026-10-22, fixed: a window is its resets_at, `StaleSamples`; after it, live
+  7d 0.1502% per 1M and release's ask of 4 x 4,520,281 = 18,081,124 is
+  `pass, warn: 5h`, not a hold).** Two sessions' status lines each report their own
+  last response's `rate_limits`, so samples.tsv flips (7d 19, 4, 19, 4 ...
+  under one `resets_at`). `instances()` cut a new window at every drop, so a
+  7d window since its 17:00Z reset was 76 fragments by 01:30Z, and history
+  summed each flip back up as a fresh rise: 9.3827% per 1M (5h 65.679%).
+  The window itself, first to max under one `resets_at`: 7d 0 -> 18 over
+  114,573,628 turn tokens = 0.157% per 1M (probe: scratch probe_ratio.py at
+  t1 1792719000). `resets_at` is constant within a window (samples.tsv since
+  2026-10-18: 12 distinct 5h values, 5 h apart; 2 for 7d). NOT units:
+  agents.sh's per-dispatch total and the gate both sum in+out+cr+cw.
+- **Subagent tokens mostly land as `backlog` (tl-578, 2026-10-22, confirmed,
+  not fixed).** `scan()` marks a message older than sample_stale_minutes at
+  first read as backlog; a subagent transcript is first read at its
+  SubagentStop, so every subagent running past 15 min (and every main turn
+  longer than that) loses its early messages from the ratio. Since the 7d
+  reset at 17:00Z: 145,370,750 turn vs 134,074,641 backlog tokens (planner
+  backlog 63.9M, harness 30.7M). The ratio over-reads ~2x (safe side, holds
+  early). Fix needs a rule that tells "first seen mid-session" from "first
+  read at its end": e.g. backlog only for messages older than the store's
+  first sight of that session, or a row per message time. Not started.
+
 ## Unconfirmed suspicions
 
 - **can-run's refusal texts are the docs', never run (2026-10-19, rs-6).**
@@ -166,9 +190,9 @@
 - **The §1 unknowns, unsettled until the first real sample** (`limits.json`
   keeps the raw `rate_limits` object whole to settle them): whether a separate
   weekly limit (Fable) appears as its own window; what exactly each window
-  carries; whether cloud sessions report `rate_limits` at all; whether
-  `resets_at` stays constant within a window (the instance split assumes a drop
-  in %, or passing `resets_at`, marks a new window). Probe: `jq .rate_limits
+  carries; whether cloud sessions report `rate_limits` at all. (Settled
+  2026-10-22, tl-578: `resets_at` is constant within a window, so
+  `instances()` keys a window by it.) Probe: `jq .rate_limits
   ~/.claude/usage/limits.json` after phase 2.
 - **A subagent's last message may be missed**: the hooks docs say
   `transcript_path` can lag the conversation. The next Stop for that
@@ -199,6 +223,15 @@
   (2026-10-06).
 
 ## Reported to other owners
+
+- **harness, 2026-10-22 (tl-578, via the dispatcher): release's half of the
+  unit seam.** `usage gate --json` now names `unit`
+  (`input+output+cache_read+cache_write`); lib/release.sh should refuse a gate
+  answer whose `unit` differs from lib/agent-tokens.jq's `total` parts (in+cw+cr+out,
+  the same today), with a fixture that fails when they differ, and re-ask the
+  gate under the fixed rate: the hold until 2026-10-29T17:00Z came from the
+  fragmented 7d rate. This repo reads nothing of `.claude/`, so the check is
+  theirs.
 
 - **setup / hooks, 2026-10-09: hook-copy drift** -- settled 2026-10-13 (Q6b):
   setup's re-render committed c368cf1; `hooks copies --gate tools/usage` ok,
