@@ -231,7 +231,11 @@
   the same today), with a fixture that fails when they differ, and re-ask the
   gate under the fixed rate: the hold until 2026-10-29T17:00Z came from the
   fragmented 7d rate. This repo reads nothing of `.claude/`, so the check is
-  theirs.
+  theirs. tl-578 stays open on that half.
+- **Unpushed (2026-10-22)**: 93105fd and ff60ce1 were committed by
+  .claude/bin/commit.sh, which pushes only when `git config funnel.push` is
+  true here, and it is not; git-funnel.sh blocks a plain `git push`. Setting
+  the record is not this repo's call.
 
 - **setup / hooks, 2026-10-09: hook-copy drift** -- settled 2026-10-13 (Q6b):
   setup's re-render committed c368cf1; `hooks copies --gate tools/usage` ok,
