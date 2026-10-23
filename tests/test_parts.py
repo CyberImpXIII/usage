@@ -93,8 +93,11 @@ class DevShHandsOver(unittest.TestCase):
                               timeout=120)
 
     def runs(self):
+        """The parts that ran, sorted: they run in parallel (--jobs), so the
+        order their lines reach runs.log is the scheduler's, not the runner's
+        (2026-10-22: ran-r before ran-u under load)."""
         p = self.tmp / "runs.log"
-        out = p.read_text().split() if p.exists() else []
+        out = sorted(p.read_text().split()) if p.exists() else []
         p.unlink(missing_ok=True)
         return out
 
@@ -103,11 +106,11 @@ class DevShHandsOver(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("2 of 4 passed; failed: red", r.stdout)
         self.assertIn("unchecked: unrun", r.stdout)
-        self.assertEqual(self.runs(), ["ran-a", "ran-b", "ran-u", "ran-r"])
+        self.assertEqual(self.runs(), ["ran-a", "ran-b", "ran-r", "ran-u"])
         (self.tmp / "c.txt").write_text("good")
         r = self.dev("check", "--resume")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(self.runs(), ["ran-u", "ran-r"])  # pa, pb unchanged since they passed: skipped
+        self.assertEqual(self.runs(), ["ran-r", "ran-u"])  # pa, pb unchanged since they passed: skipped
 
     def test_test_part_runs_that_part_alone(self):
         r = self.dev("test", "pb")
