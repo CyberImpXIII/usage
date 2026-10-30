@@ -263,6 +263,53 @@ want 2 "its not_exported store, redirect" Bash "echo x > p.json" "$P" "" "\`$P/p
 want 0 "a file beside it"                Write "$P/q.json" "$P"
 want 0 "the CLI's own call"              Bash  "./p.sh set x" "$P"
 
+echo "a cli.json with \`renders\` (generated files, each naming the verb that writes it):"
+G=$T/gen; mkdir -p "$G/agents" "$G/docs"
+printf '#!/bin/sh\nexit 0\n' > "$G/g.sh"; chmod +x "$G/g.sh"
+for f in TODO.md agents/a.md agents/b.txt docs/x.md NOTES.md; do printf 'x\n' > "$G/$f"; done
+printf '{"cli": "g.sh", "verbs": ["add", "render", "gen"], "store": ["s.json"], "renders": {"TODO.md": "render", "agents/*.md": "gen", "bad.md": 3, "empty.md": ""}}\n' > "$G/cli.json"
+GR="\`$G/g.sh render\`"; GG="\`$G/g.sh gen\`"
+# render 1: TODO.md, by `render`
+want 2 "TODO.md, Write, names \`g.sh render\`"  Write "$G/TODO.md" "$G" "" "$GR"
+want 2 "TODO.md, Edit"                          Edit  "$G/TODO.md" "$G" "" "$GR"
+want 2 "TODO.md, redirect"                      Bash  "echo x > TODO.md" "$G" "" "$GR"
+want 2 "TODO.md, sed -i"                        Bash  "sed -i '' s/x/y/ TODO.md" "$G" "" "$GR"
+if [ -e "$G/todo.md" ]; then   # a case-insensitive file system
+  want 2 "TODO.md as todo.md (a case variant)"  Write "$G/todo.md" "$G" "" "$GR"
+else
+  echo "  skip  case variant: this file system is case-sensitive"
+fi
+ln -s "$G" "$T/gen-link"
+want 2 "TODO.md through a symlinked dir"        Write "$T/gen-link/TODO.md" "$T" "" "\`$T/gen-link/g.sh render\`"
+ln -s "$G/TODO.md" "$T/gen-todo-link.md"         # outside the tree: held by its real path
+want 2 "TODO.md through a file symlink outside" Write "$T/gen-todo-link.md" "$T" "" "$GR"
+ln "$G/TODO.md" "$G/docs/hard.md"   # in the tree: outside it is not seen (header)
+want 2 "TODO.md through a hard link (inode)"    Write "$G/docs/hard.md" "$G" "" "$GR"
+# render 2: agents/*.md, by `gen` (a glob)
+want 2 "agents/a.md, Write, names \`g.sh gen\`" Write "$G/agents/a.md" "$G" "" "$GG"
+want 2 "agents/new.md (not yet on disk)"        Write "$G/agents/new.md" "$G" "" "$GG"
+want 2 "agents/a.md, cp onto"                   Bash  "cp NOTES.md agents/a.md" "$G" "" "$GG"
+# counterfactual: the same kind of file, not listed, passes
+want 0 "NOTES.md (not in renders) passes"       Write "$G/NOTES.md" "$G"
+want 0 "agents/b.txt (outside the glob) passes" Write "$G/agents/b.txt" "$G"
+want 0 "docs/x.md (not listed) passes"          Bash  "echo x > docs/x.md" "$G"
+want 0 "bad.md (verb not a string) skipped"     Write "$G/bad.md" "$G"
+want 0 "empty.md (verb empty) skipped"          Write "$G/empty.md" "$G"
+want 0 "the CLI's own call"                     Bash  "./g.sh render" "$G"
+want 0 "a read of a render"                     Bash  "cat TODO.md" "$G"
+# a store beside renders keeps its own message
+want 2 "its store still names the CLI's verbs"  Write "$G/s.json" "$G" "" "\`$G/g.sh\` (verbs: add render gen)"
+# the message is the render's, not the store's
+want 2 "a render's message says generated"      Write "$G/TODO.md" "$G" "" "it is generated"
+# with no cli: the verb is still named
+printf '{"renders": {"TODO.md": "render"}}\n' > "$T/gen2.json"; mkdir -p "$T/gen2"; mv "$T/gen2.json" "$T/gen2/cli.json"
+want 2 "no cli: names the verb alone"           Write "$T/gen2/TODO.md" "$T/gen2" "" "\`render\` of the CLI it names"
+# fail open: a renders that is not an object names nothing
+printf '{"cli": "g.sh", "renders": ["TODO.md"]}\n' > "$T/gen2/cli.json"
+want 0 "renders as a list: skipped"             Write "$T/gen2/TODO.md" "$T/gen2"
+printf '{"cli": "g.sh", "renders": "TODO.md"}\n' > "$T/gen2/cli.json"
+want 0 "renders as a string: skipped"           Write "$T/gen2/TODO.md" "$T/gen2"
+
 echo "the lib absent (a lone copy of the hook):"
 mkdir -p "$T/lone/hooks" && cp "$HOOK" "$T/lone/hooks/"
 want 2 "Write still blocked"             Write "$R/data/s.json" "$R" "$T/lone/hooks/store-guard.sh"

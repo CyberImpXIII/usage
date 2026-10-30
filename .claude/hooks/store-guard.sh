@@ -12,6 +12,12 @@
 # store it names is resolved against THAT directory (so the workspace top's
 # `.claude/cli.json` names `.claude/agents.manifest.json`). Which session
 # makes the write, and where it started, does not matter.
+# A generated file is held the same way: a cli.json's `renders` is an object
+# from a path (or glob, relative to that directory, as for `store`) to the
+# verb that writes it, `{"TODO.md": "render", "agents/*.md": "gen"}`. It is
+# matched exactly as a store is, and the message names `<cli> <verb>` to
+# regenerate it. An entry whose verb is not a non-empty string is skipped
+# (fails open), as is a `renders` that is not an object.
 # A store no cli.json names yet is named in ../lib/extra-stores.sh, as a
 # path relative to a repo root: it is resolved against every directory above
 # the target that holds a CLAUDE.md (so `todo.json` is each repo's own
@@ -153,13 +159,20 @@ caseless() {
   [ "$(ident "$1/$up")" = "$(ident "$1/$2")" ]
 }
 
-# A cli.json's lines: `cli<TAB>x`, `verbs<TAB>a b`, `store<TAB>p` per store.
-# Nothing at all when it does not parse or is not an object (fails open).
+# A cli.json's lines: `cli<TAB>x`, `verbs<TAB>a b`, `store<TAB>p` per store,
+# `render<TAB>p<TAB>verb` per `renders` entry (an object, path -> the verb
+# that writes it; an entry whose verb is not a non-empty string, or with a tab
+# or newline in it, is skipped). Nothing at all when it does not parse or is
+# not an object (fails open).
 read_cli() {
   jq -r 'if type == "object" then
       ("cli\t" + (.cli | strings)),
       ("verbs\t" + ((.verbs // []) | if type == "array" then map(strings) | join(" ") else "" end)),
-      ((.store | if type == "string" then [.] elif type == "array" then . else [] end)[] | strings | "store\t" + .)
+      ((.store | if type == "string" then [.] elif type == "array" then . else [] end)[] | strings | "store\t" + .),
+      ((.renders | if type == "object" then to_entries else [] end)[]
+        | select((.value | type) == "string" and .value != "" and .key != ""
+                 and ((.key + .value) | test("[\t\n\r]") | not))
+        | "render\t" + .key + "\t" + .value)
     else empty end' "$1" 2>/dev/null
 }
 
@@ -193,6 +206,20 @@ block() {   # <target as given> <store> <dir holding cli.json> <cli> <verbs>
   exit 2
 }
 
+block_render() {   # <target as given> <render> <dir holding cli.json> <cli> <verb>
+  local run what=$1
+  run="\`$5\` of the CLI it names"
+  [ -n "$4" ] && run="\`$(normpath "$4" "$3") $5\`"
+  [ "$2" = "$1" ] || what="$1 (the render $2)"
+  echo "store-guard: $how writes $what, a file that ${3%/}/cli.json lists in \`renders\`: it is generated, and a hand edit is lost at the next render. Change its source through the CLI and run $run to regenerate it. A hand edit or a shell write to it is refused (PLAN-services.md §3)." >&2
+  exit 2
+}
+
+block_any() {   # <target> <store or render> <dir> <cli> <verbs> <render's verb, or empty for a store>
+  if [ -n "$6" ]; then block_render "$1" "$2" "$3" "$4" "$6"; fi
+  block "$1" "$2" "$3" "$4" "$5"
+}
+
 block_extra() {   # <target as given> <store> <index in the list>
   local what=$1 run
   [ "$2" = "$1" ] || what="$1 (the store $2)"
@@ -205,31 +232,34 @@ block_extra() {   # <target as given> <store> <index in the list>
 # check_form <target as given> <form: the target or its real path> <ids>
 #            <which: cli (each cli.json above) | extra (the extra-stores list)>
 check_form() {
-  local p=$1 f=$2 ids=$3 which=$4 base d dir key val cli verbs stores s sl ci sid k
+  local p=$1 f=$2 ids=$3 which=$4 base d dir key val rv cli verbs stores rverb s sl ci sid k
   base=$f
   case "$f" in *-wal|*-shm|*-journal) base=${f%-*} ;; esac
   d=${f%/*}
   while :; do
     dir=${d:-/}
     if [ "$which" = cli ] && [ -f "$dir/cli.json" ]; then
-      cli=""; verbs=""; stores=()
-      while IFS=$'\t' read -r key val; do
+      # stores[k] is a store (rverb[k] empty) or a render (rverb[k] its verb)
+      cli=""; verbs=""; stores=(); rverb=()
+      while IFS=$'\t' read -r key val rv; do
         case "$key" in
           cli) cli=$val ;;
           verbs) verbs=$val ;;
-          store) [ -n "$val" ] && stores+=("$val") ;;
+          store) [ -n "$val" ] && { stores+=("$val"); rverb+=(""); } ;;
+          render) [ -n "$val" ] && [ -n "$rv" ] && { stores+=("$val"); rverb+=("$rv"); } ;;
         esac
       done < <(read_cli "$dir/cli.json")
       if [ ${#stores[@]} -gt 0 ]; then
         ci=0; caseless "$dir" cli.json && ci=1
-        for s in "${stores[@]}"; do
+        for k in "${!stores[@]}"; do
+          s=${stores[$k]}
           sl=$(normpath "$s" "$dir" 2>/dev/null) || continue
           [ -n "$sl" ] || continue
-          if hit "$f" "$base" "$sl" $ci; then block "$p" "$sl" "$dir" "$cli" "$verbs"; fi
+          if hit "$f" "$base" "$sl" $ci; then block_any "$p" "$sl" "$dir" "$cli" "$verbs" "${rverb[$k]}"; fi
           # the same file under another name: a case variant, a symlink, a hard link
           case "$s" in *[*?[]*) continue ;; esac
           if [ -n "$ids" ] && sid=$(ident "$sl") && [ -n "$sid" ]; then
-            case " $ids " in *" $sid "*) block "$p" "$sl" "$dir" "$cli" "$verbs" ;; esac
+            case " $ids " in *" $sid "*) block_any "$p" "$sl" "$dir" "$cli" "$verbs" "${rverb[$k]}" ;; esac
           fi
         done
       fi

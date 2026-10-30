@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# hooks: applies_to=all dest=.claude/lib
+# hooks: applies_to=all dest=.claude/lib sourced_by=.claude/lib/append.sh
 # SOURCED, not executed. The ONE definition of the write ledger: where it is,
 # its columns, how a row is written and how it is read. write-ledger.sh writes
 # it; primary-guard.sh and push-gate.sh read it (all three source this copy
 # beside them, ../lib/). Its source is tools/hooks (source/lib/); `hooks copies`
 # there fails when a copy differs from it. Change the source, never a copy.
 # Tests: bash tools/hooks/source/tests/test-ledger.sh
+#
+# LIVE IN PLACE. The workspace top gets no rendered copy: .claude/lib/append.sh
+# (harness's) sources THIS SOURCE FILE in place for ledger_fail (the lost-row
+# path of every harness ledger), and .claude/hooks/in-place.sh runs the source
+# hooks in place too. So an edit here is live there the moment it is saved,
+# committed or not: keep the file parsing and every function failing open at
+# each save, and run test-ledger.sh before the next tool call.
 #
 # THE LEDGER is <repo>/.claude/state/writes.tsv, where <repo> is the nearest
 # directory above a written file that holds a `.claude/` directory (never the
@@ -45,7 +52,10 @@
 #   ledger_files <root>         every ledger under <root> (depth 7: a repo up to
 #                               4 deep, plus .claude/state/writes.tsv; .git and
 #                               node_modules pruned), one per line
-#   ledger_failures <root>      every <ledger>.failed marker under <root>, then
+#   ledger_failures <root>      every <ledger>.failed marker under <root> (any
+#                               ledger's: writes.tsv.failed by name, another
+#                               when its first row names a ledger of that name;
+#                               same depth and pruning as ledger_files), then
 #                               the fallback marker in $TMPDIR when it holds rows
 #
 # Every function only prints, sets a variable or (on a failed append)
@@ -120,11 +130,24 @@ ledger_fail() {   # <ledger> <reason> <row>
   fi
 }
 
+# Every marker, of ANY ledger (ledger_fail is also the lost-row path of the
+# harness's other ledgers, through .claude/lib/append.sh): a writes.tsv.failed
+# by its name, and any other `<x>.failed` whose first row names a ledger `<x>`
+# (its 2nd field, the ledger, ends in the marker's name less `.failed`), so an
+# unrelated file that merely ends in .failed is not listed.
 ledger_failures() {   # <root>: every marker of a lost row under <root>, then the fallback if it exists
-  local fb=${TMPDIR:-/tmp}
+  local fb=${TMPDIR:-/tmp} m first led x
   fb=${fb%/}/$LEDGER_FAILED_FALLBACK
-  [ -d "$1" ] && find "$1" -maxdepth 7 \( -type d \( -name .git -o -name node_modules \) -prune \) \
-    -o -type f -path "*/$LEDGER_REL$LEDGER_FAILED_SUFFIX" -print 2>/dev/null
+  if [ -d "$1" ]; then
+    while IFS= read -r m; do
+      case "$m" in */"$LEDGER_REL$LEDGER_FAILED_SUFFIX") printf '%s\n' "$m"; continue ;; esac
+      first=""
+      IFS= read -r first < "$m" 2>/dev/null || [ -n "$first" ] || continue
+      IFS=$'\t' read -r x led x <<< "$first"
+      [ -n "$led" ] && [ "${led##*/}$LEDGER_FAILED_SUFFIX" = "${m##*/}" ] && printf '%s\n' "$m"
+    done < <(find "$1" -maxdepth 7 \( -type d \( -name .git -o -name node_modules \) -prune \) \
+               -o -type f -name "*$LEDGER_FAILED_SUFFIX" -print 2>/dev/null)
+  fi
   [ -s "$fb" ] && printf '%s\n' "$fb"
   return 0
 }
