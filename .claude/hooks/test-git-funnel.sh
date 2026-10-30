@@ -51,6 +51,8 @@ echo "refused, each naming the verb (and passing without it):"
 refused "git add"                     'git add a.txt'
 refused "git commit"                  'git commit -m x'
 refused "git push"                    'git push origin main'
+run "$ON" 'git push origin main'
+[[ $err == *".claude/bin/commit.sh [-C <repo>] --push"* ]] && pass "  ...and names the verb's --push (tl-571)" || fail "  ...--push not named: ${err:0:200}"
 refused "git rebase"                  'git rebase main'
 refused "git reset --hard"            'git reset --hard HEAD~1'
 refused "git checkout -- <path>"      'git checkout -- a.txt'

@@ -147,6 +147,8 @@ if [ ${#denied[@]} -gt 0 ] && [ $enforce = 1 ]; then
     echo "      failure, nothing staged), stages and commits ONLY the named paths with your Agent"
     echo "      trailers, pushes when the repo's record (git config funnel.push) says so, and prints"
     echo "      one line: outcome, hash, files, pushed or not."
+    echo "  $root/$VERB_REL [-C <repo>] --push       push commits already made (HEAD), under the same"
+    echo "      record; commits nothing, and says why when it pushes nothing"
     echo "  $root/$VERB_REL [-C <repo>] --status     changed paths + who committed last"
     echo "  $root/$VERB_REL --outcomes               what each outcome means"
     echo

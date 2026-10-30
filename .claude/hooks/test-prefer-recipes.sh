@@ -219,6 +219,162 @@ else
     '[ "$1" = known ] && { cat "$(dirname "$0")/known.tsv"; exit 0; }' \
     'exit 0' > "$SCRATCH/site-scrapers/dev.sh"
   standin 2 "covers exits 0 with no marker: host match blocks"  'https://jobs.stored-www.example/x'
+
+  # --- A browser driven through Bash (tl-562). The tool names, API addresses
+  # and clearances are read from the lib beside this test, never typed here,
+  # so a row added there is tested here. The stand-in tree is the workspace:
+  # its top is $SCRATCH, the folder holding site-scrapers.
+  echo "a browser driven through Bash (stand-in workspace, the lib's own rows):"
+  REAL_LIB="$DIR/../lib/browser-drivers.sh"
+  # A lone copy of this test and its hook (no lib beside them) has no rows to
+  # test: UNCHECKED, said out loud, never a pass. A lib that IS there but does
+  # not load still fails below. `hooks copies` fails a copy whose lib is MISSING.
+  if [ ! -f "$REAL_LIB" ] || [ ! -f "$DIR/../lib/write-targets.sh" ]; then
+    u="$REAL_LIB or write-targets.sh beside it is absent: the Bash cases did not run"
+    unchecked="${unchecked:+$unchecked; }$u"; echo "  UNCHECKED  $u"
+  else
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[ "$1" = known ] && cat "$(dirname "$0")/known.tsv"' 'exit 0' > "$SCRATCH/site-scrapers/dev.sh"
+  mkdir -p "$SCRATCH/.claude/lib" "$SCRATCH/repo-a"
+  cp "$REAL_LIB" "$SCRATCH/.claude/lib/browser-drivers.sh" 2>/dev/null
+  cp "$DIR/../lib/write-targets.sh" "$SCRATCH/.claude/lib/write-targets.sh" 2>/dev/null
+  OUT="$SCRATCH/hook.err"
+  ELSEWHERE="$(mktemp -d)" || ELSEWHERE=/nonexistent-elsewhere
+  trap 'rm -f "$SS_BROWSER_OK"; rm -rf "$SCRATCH" "$ELSEWHERE"' EXIT
+  # bashcase <want> <desc> <command> [project dir] [text the message must hold]
+  bashcase() {
+    local got proj=${4:-$SCRATCH/repo-a} need=${5:-}
+    jq -nc --arg c "$3" --arg d "$proj" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}' \
+      | CLAUDE_PROJECT_DIR="$proj" bash "$SCRATCH/.claude/hooks/prefer-recipes.sh" >"$OUT" 2>&1
+    got=$?
+    if [ "$got" != "$1" ]; then
+      printf '  FAIL  %-50s expected exit %s, got %s\n' "$2" "$1" "$got"; fails=$((fails + 1))
+    elif [ -n "$need" ] && ! grep -qF -- "$need" "$OUT"; then
+      printf '  FAIL  %-50s exit %s but the message lacks: %s\n' "$2" "$got" "$need"; fails=$((fails + 1))
+    else
+      printf '  ok    %-50s (exit %s)\n' "$2" "$got"
+    fi
+  }
+  rows=""
+  if [ -f "$REAL_LIB" ] && . "$REAL_LIB" && rows=$(browser_drivers) && [ -n "$rows" ]; then :; else
+    echo "  FAIL  $REAL_LIB did not load or printed no rows: the Bash cases did not run"
+    fails=$((fails + 1)); rows=""
+  fi
+  CLIS=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "cli" { print $3 }')
+  APIS=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "api" { print $3 }')
+  CLIENT=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "http-client" { print $3; exit }')
+  LAUNCHER=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "launcher" { print $3; exit }')
+  # The CLI of one tool with no `cleared` row: the tool of the first api row
+  # when it is uncleared (so the API cases below clear the same tool), else
+  # any uncleared one.
+  UNCLEARED=$(printf '%s\n' "$rows" | awk -F'\t' '
+    $1 == "cleared" { c[$2] = 1 } $1 == "cli" && !($2 in t) { t[$2] = $3; order[++n] = $2 }
+    $1 == "api" && first == "" { first = $2 }
+    END { if (first != "" && (first in t) && !(first in c)) { print t[first]; exit }
+          for (i = 1; i <= n; i++) if (!(order[i] in c)) { print t[order[i]]; exit } }')
+  [ -n "$CLIS" ] || { echo "  FAIL  the lib names no cli row"; fails=$((fails + 1)); }
+  [ -n "$APIS" ] || { echo "  FAIL  the lib names no api row"; fails=$((fails + 1)); }
+
+  # The hook's CODE names none of them: they are data (comments may).
+  for v in $CLIS $APIS; do
+    if grep -v '^[[:space:]]*#' "$HOOK" | grep -qF -- "$v"; then
+      echo "  FAIL  the hook's code names '$v': it belongs in browser-drivers.sh"; fails=$((fails + 1))
+    fi
+  done
+
+  for c in $CLIS; do
+    # a failing fixture: the CLI itself, on any host, while not cleared
+    if [ "$c" = "$UNCLEARED" ] || ! printf '%s\n' "$rows" | awk -F'\t' -v c="$c" '$1=="cli" && $3==c {t=$2} $1=="cleared" {k[$2]=1} END {exit !(t in k)}'; then
+      bashcase 2 "$c on an unknown host: not cleared"      "$c nav https://unknown-host.invalid/x" "" "drives"
+      bashcase 2 "$c by full path, env prefixed"           "FOO=1 /opt/bin/$c --doctor"
+      bashcase 2 "$c after cd &&, timeout"                 "cd /tmp && timeout -s INT 30 $c snap"
+      [ -n "$LAUNCHER" ] && bashcase 2 "$c through $LAUNCHER, pinned"  "$LAUNCHER -y $c@1.0.0 nav https://a.invalid/"
+    fi
+    # passing fixtures: its name is text, not a call
+    bashcase 0 "grep for $c"                               "grep -rn $c notes.txt"
+    bashcase 0 "$c inside a quoted string"                 "echo \"$c nav https://stored-caps.example/\""
+    bashcase 0 "command -v $c"                             "command -v $c"
+    [ -n "$LAUNCHER" ] && bashcase 0 "$LAUNCHER install of $c (not a run)" "$LAUNCHER install -g $c"
+  done
+  for a in $APIS; do
+    [ -n "$CLIENT" ] && bashcase 2 "$CLIENT to the API at $a"  "$CLIENT -sg -X POST http://$a/navigate -d '{\"url\":\"https://unknown-host.invalid/\"}'"
+    bashcase 0 "grep for the address $a"                   "grep -n '$a' PLAN.md"
+  done
+  [ -n "$CLIENT" ] && bashcase 0 "$CLIENT to another address"  "$CLIENT -s https://stored-caps.example/jobs"
+
+  if [ -n "$UNCLEARED" ]; then
+    # browser-ok does not open an uncleared tool
+    printf '%s\n15\n' "$(date +%s)" > "$SS_BROWSER_OK"
+    bashcase 2 "not cleared: browser-ok does not open it"  "$UNCLEARED nav https://stored-caps.example/jobs"
+    rm -f "$SS_BROWSER_OK"
+    # this workspace only (Jacob, tl-565): the counterfactual pair
+    bashcase 0 "a project dir outside the workspace"       "$UNCLEARED nav https://stored-caps.example/jobs" "$ELSEWHERE"
+    bashcase 2 "...the same call inside it"                "$UNCLEARED nav https://stored-caps.example/jobs" "$SCRATCH"
+
+    # cleared: a planted lib with a `cleared` row for it, the real rows kept
+    printf '%s\n' ". \"$REAL_LIB\"" '_bd_rows=$(browser_drivers)' \
+      "browser_drivers() { printf '%s\\n' \"\$_bd_rows\"; printf 'cleared\\t%s\\t%s\\n' '$(printf '%s\n' "$rows" | awk -F'\t' -v c="$UNCLEARED" '$1=="cli" && $3==c {print $2; exit}')' test-record; }" \
+      > "$SCRATCH/.claude/lib/browser-drivers.sh"
+    bashcase 0 "cleared: an uncovered host"                "$UNCLEARED nav https://unknown-host.invalid/x"
+    bashcase 0 "cleared: no url at all"                    "$UNCLEARED snap -i -c"
+    bashcase 2 "cleared: a covered host, names scrape.sh"  "$UNCLEARED nav https://www.stored-caps.example/jobs" "" "already has a working recipe for stored-caps.example"
+    bashcase 0 "cleared: robots.txt of a covered host"     "$UNCLEARED nav https://stored-caps.example/robots.txt"
+    bashcase 0 "cleared: registered but not working"       "$UNCLEARED nav https://broken-fixture.example/jobs"
+    printf '%s\n15\n' "$(date +%s)" > "$SS_BROWSER_OK"
+    bashcase 0 "cleared: covered, browser-ok fresh"        "$UNCLEARED nav https://stored-caps.example/jobs"
+    printf '0\n1\n' > "$SS_BROWSER_OK"
+    bashcase 2 "cleared: covered, browser-ok expired"      "$UNCLEARED nav https://stored-caps.example/jobs"
+    rm -f "$SS_BROWSER_OK"
+  else
+    echo "  FAIL  every cli row is cleared: the uncleared and cleared cases need one that is not"
+    fails=$((fails + 1))
+  fi
+  if [ -n "$CLIENT" ] && [ -n "$UNCLEARED" ]; then
+    a1=$(printf '%s\n' "$APIS" | head -1)
+    bashcase 2 "cleared: API call naming a covered url"    "$CLIENT -s http://$a1/navigate -d '{\"url\":\"https://stored-caps.example/jobs\"}'" "" "./scrape.sh Stored-Caps.example"
+    bashcase 0 "cleared: API call, no url"                 "$CLIENT -s http://$a1/health"
+  fi
+
+  # The names are DATA: a lib naming another tool moves the block with it.
+  printf '%s\n' 'browser_drivers() { printf "cli\tplanted\tplanted-driver\n"; }' > "$SCRATCH/.claude/lib/browser-drivers.sh"
+  bashcase 2 "a planted lib's cli is blocked"            "planted-driver nav https://unknown-host.invalid/"
+  for c in $CLIS; do
+    bashcase 0 "...and $c, absent from it, is not"     "$c nav https://unknown-host.invalid/"
+  done
+
+  # Fails open: malformed input, and a lib that is missing or broken.
+  c1=$(printf '%s\n' "$CLIS" | head -1)
+  cp "$REAL_LIB" "$SCRATCH/.claude/lib/browser-drivers.sh"
+  for bad in '' '{}' 'not json' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{"command":5}}' \
+             "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c1 nav https://x.invalid/\"" ; do
+    printf '%s' "$bad" | CLAUDE_PROJECT_DIR="$SCRATCH" bash "$SCRATCH/.claude/hooks/prefer-recipes.sh" >/dev/null 2>&1
+    got=$?
+    if [ "$got" = 0 ]; then printf '  ok    %-50s (exit 0)\n' "fails open on: ${bad:-<empty>}"
+    else printf '  FAIL  %-50s expected exit 0, got %s\n' "fails open on: ${bad:-<empty>}" "$got"; fails=$((fails + 1)); fi
+  done
+  printf 'browser_drivers() { (\n' > "$SCRATCH/.claude/lib/browser-drivers.sh"
+  bashcase 0 "fails open: a lib that does not parse"     "$c1 nav https://x.invalid/"
+  printf '# no function here\n' > "$SCRATCH/.claude/lib/browser-drivers.sh"
+  bashcase 0 "fails open: a lib with no browser_drivers" "$c1 nav https://x.invalid/"
+  rm -f "$SCRATCH/.claude/lib/browser-drivers.sh"
+  bashcase 0 "fails open: the lib missing"               "$c1 nav https://x.invalid/"
+  cp "$REAL_LIB" "$SCRATCH/.claude/lib/browser-drivers.sh"
+  bashcase 2 "...and blocks again with it back"          "$c1 nav https://x.invalid/"
+  fi
+fi
+
+# The registration covers every tool the hook reads (documented == implemented):
+# held where this test sits beside the SOURCE settings (an installed copy's
+# live settings are its owner's, reported by `hooks copies` as `registered`).
+if [ "$(basename "$(dirname "$DIR")")" = source ] && [ -f "$DIR/../settings.json" ]; then
+  echo "the source registration matches every tool the hook reads:"
+  matchers=$(jq -r '.hooks.PreToolUse[] | select(any(.hooks[]; .command | test("prefer-recipes"))) | .matcher' "$DIR/../settings.json" 2>/dev/null)
+  for t in Bash WebFetch mcp__claude-in-chrome__navigate mcp__claude-in-chrome__tabs_create_mcp; do
+    hit=0
+    while IFS= read -r m; do [ -n "$m" ] && [[ $t =~ ^($m)$ ]] && hit=1; done <<< "$matchers"
+    if [ $hit = 1 ]; then printf '  ok    %-50s\n' "$t is registered"
+    else printf '  FAIL  %-50s\n' "$t is not registered for prefer-recipes.sh"; fails=$((fails + 1)); fi
+  done
 fi
 
 covered=$(pick "$PICK_COVERED")
@@ -230,6 +386,14 @@ if [ -n "$covered" ]; then
   check 2 "WebFetch on a covered host"   'WebFetch'                              "https://$covered/search?q=x"
   check 2 "navigate on a covered host"   'mcp__claude-in-chrome__navigate'       "https://www.$covered/jobs"
   check 2 "tabs_create on a covered host" 'mcp__claude-in-chrome__tabs_create_mcp' "http://$covered/"
+  # The installed hook and lib, in the real workspace: each cli row's tool.
+  for c in ${CLIS:-}; do
+    jq -nc --arg c "$c nav https://$covered/jobs" --arg d "$(dirname "$REPO")" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}' \
+      | CLAUDE_PROJECT_DIR="$(dirname "$REPO")" bash "$HOOK" >/dev/null 2>&1
+    got=$?
+    if [ "$got" = 2 ]; then printf '  ok    %-34s (exit 2)\n' "Bash: $c on a covered host"
+    else printf '  FAIL  %-34s expected exit 2, got %s\n' "Bash: $c on a covered host" "$got"; fails=$((fails + 1)); fi
+  done
 else
   skip "covered-host cases" "no working recipe in this DB"
 fi

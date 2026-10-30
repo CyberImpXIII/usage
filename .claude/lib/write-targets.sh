@@ -76,7 +76,7 @@
 #
 # A VARIABLE ASSIGNED A LITERAL in an assignment-only segment (`D=x;`,
 # `export D=x`) is substituted in the segments after it (2026-10-09: `D=.claude;
-# sed -i x $D/agents.manifest.json`). One assigned at run time (`D=$(pwd)`), or
+# sed -i x $D/data.json`). One assigned at run time (`D=$(pwd)`), or
 # set by for/read/printf -v, is unknown, so a target using it is not emitted.
 #
 # QUOTES ARE PARSED, not stripped (fixed 2026-10-02: `grep '^[<>] x'` was read

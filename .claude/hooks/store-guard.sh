@@ -9,8 +9,8 @@
 # store is any file a `cli.json` names in its `store` (a path or a list of
 # paths and globs, as tools/checks' schema/cli.schema.json has it). For each
 # write target, every directory above it is looked at for a `cli.json`; each
-# store it names is resolved against THAT directory (so the workspace top's
-# `.claude/cli.json` names `.claude/agents.manifest.json`). Which session
+# store it names is resolved against THAT directory (so `"store": "data.json"`
+# in a `.claude/cli.json` names `.claude/data.json`). Which session
 # makes the write, and where it started, does not matter.
 # A generated file is held the same way: a cli.json's `renders` is an object
 # from a path (or glob, relative to that directory, as for `store`) to the

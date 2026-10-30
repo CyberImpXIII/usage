@@ -23,10 +23,19 @@
 #          message already carries a Co-Authored-By line. A git hook refusing
 #          it: commit-refused (the paths stay staged);
 #       5. push only when `origin` exists AND `git config --bool funnel.push`
-#          is true (the repo's push record, written by setup). Unset: not
-#          pushed, and the line says why. Rejected by the remote: push-refused;
-#          any other push failure: push-failed. Either way the commit stands;
+#          is true (the repo's push record, written by setup). Unset, false or
+#          not a boolean: not pushed, and the line says which. Detached HEAD:
+#          push-failed. Rejected by the remote: push-refused; any other push
+#          failure: push-failed. Either way the commit stands;
 #       6. print ONE line: outcome, hash, the files, pushed or not.
+#   commit.sh [-C <repo>] --push
+#       push HEAD to origin/<its branch> under the same record as step 5, and
+#       nothing else: no check, no staging, no commit (tl-571: a commit made
+#       while the record was unset otherwise reaches origin only with the next
+#       commit). Outcomes: pushed (sent, or already there: the line says
+#       which, with the range and count); push-skipped when there is no
+#       origin, the record is unset, false or not a boolean, or HEAD is
+#       detached (the line says which); push-refused; push-failed.
 #   commit.sh [-C <repo>] --status
 #       one line per changed path (git status --porcelain), then the last
 #       commit's hash, subject and Agent trailer.
@@ -50,10 +59,12 @@ OUTCOMES=(
   "usage:2:the command line is not one this verb takes"
   "check-failed:3:./dev.sh check failed, timed out or is missing; nothing staged or committed"
   "nothing-staged:4:the named paths hold no change; nothing committed"
-  "push-refused:5:committed; the remote rejected the push"
-  "push-failed:6:committed; the push did not complete (network, auth, no branch)"
+  "push-refused:5:the remote rejected the push (after a commit, the commit stands)"
+  "push-failed:6:the push did not complete (network, auth, detached HEAD); a commit stands"
   "path-refused:7:a path is outside the repo, an option, ., :/ or a glob; nothing done"
   "commit-refused:8:git refused the commit (a git hook); the paths stay staged"
+  "pushed:0:--push: HEAD is on origin/<branch> (sent, or already there, as the line says)"
+  "push-skipped:9:--push: nothing pushed (no origin, record unset/false/not boolean, detached HEAD)"
 )
 CHECK_TIMEOUT=${COMMIT_CHECK_TIMEOUT:-1800}
 DIGEST_LINES=20
@@ -65,7 +76,7 @@ finish() {   # outcome line...
   exit "$(code_of "$out")"
 }
 usage() {
-  echo "usage: commit.sh [-C <repo>] \"<message>\" <path>...   |   commit.sh [-C <repo>] --status   |   commit.sh --outcomes [--json]" >&2
+  echo "usage: commit.sh [-C <repo>] \"<message>\" <path>...   |   commit.sh [-C <repo>] --push   |   commit.sh [-C <repo>] --status   |   commit.sh --outcomes [--json]" >&2
   finish usage "(see the header of this file)"
 }
 
@@ -104,6 +115,53 @@ if [ "${1:-}" = "--status" ]; then
     printf 'last: %s (Agent: %s)\n' "${last%%$'\x1f'*}" "${who:-none}"
   else echo "last: no commit yet"; fi
   exit 0
+fi
+
+# The push, one routine for both modes. push_blocker prints why HEAD is not
+# to be pushed (empty: it is) and sets $branch; push_head runs the push and
+# sets $pushed_line and $push_out (pushed | push-refused | push-failed) from
+# git's --porcelain ref line, not from the exit code alone.
+branch=""
+push_blocker() {
+  git remote get-url origin >/dev/null 2>&1 || { echo "no origin"; return; }
+  if ! git config --get funnel.push >/dev/null 2>&1; then
+    echo "no push record: git config funnel.push is unset"; return
+  fi
+  local rec
+  rec=$(git config --bool --get funnel.push 2>/dev/null) || { echo "the push record is not a boolean: git config funnel.push"; return; }
+  [ "$rec" = true ] || { echo "the push record says no: git config funnel.push is $rec"; return; }
+  branch=$(git symbolic-ref -q --short HEAD) || { echo "detached HEAD"; return; }
+}
+push_head() {   # log-file
+  local plog=$1 rc line flag summary n
+  GIT_FUNNEL=commit git push --porcelain origin "HEAD:refs/heads/$branch" >"$plog" 2>&1; rc=$?
+  line=$(grep -m1 $'\tHEAD:refs/heads/'"$branch"$'\t' "$plog")
+  flag=${line:0:1}; summary=${line##*$'\t'}
+  case "$rc:$flag" in
+    0:=) push_out=pushed; pushed_line="origin/$branch already at $(git rev-parse --short HEAD); nothing sent" ;;
+    0:" "|0:+|0:\*)
+      push_out=pushed
+      case "$summary" in
+        *..*) n=$(git rev-list --count "${summary/.../..}" 2>/dev/null) || n="?"
+              pushed_line="pushed origin/$branch $summary, $n commit(s)" ;;
+        *) pushed_line="pushed origin/$branch $summary" ;;
+      esac ;;
+    *:!) push_out=push-refused; pushed_line="origin/$branch rejected the push: $summary" ;;
+    *) push_out=push-failed; pushed_line="push to origin/$branch failed (git push exited $rc)" ;;
+  esac
+}
+
+if [ "${1:-}" = "--push" ]; then
+  [ $# -eq 1 ] || usage
+  head=$(git rev-parse --short HEAD 2>/dev/null) || finish push-skipped "- no commit yet: nothing to push"
+  why=$(push_blocker)
+  [ -z "$why" ] || finish push-skipped "$head not pushed ($why)"
+  branch=$(git symbolic-ref -q --short HEAD)
+  plog=$(mktemp "${TMPDIR:-/tmp}/commit-push.XXXXXX") || finish push-failed "$head - cannot make a log file"
+  trap 'rm -f "$plog"' EXIT
+  push_head "$plog"
+  [ "$push_out" = pushed ] || tail -n "$DIGEST_LINES" "$plog"
+  finish "$push_out" "$head $pushed_line"
 fi
 
 msg=${1:-}; shift
@@ -193,16 +251,14 @@ hash=$(git rev-parse --short HEAD)
 files="${#paths[@]} file(s): ${paths[*]}; $stamp"
 
 # 5. push per the record
-if ! git remote get-url origin >/dev/null 2>&1; then
-  finish committed "$hash $files; not pushed (no origin)"
-fi
-if [ "$(git config --bool funnel.push 2>/dev/null)" != "true" ]; then
-  finish committed "$hash $files; not pushed (no push record: git config funnel.push is not true)"
-fi
-branch=$(git symbolic-ref -q --short HEAD) || finish push-failed "$hash $files; not pushed (detached HEAD)"
-if git push -q origin "HEAD:refs/heads/$branch" >"$log" 2>&1; then
-  finish committed "$hash $files; pushed origin/$branch"
-fi
+why=$(push_blocker)
+case "$why" in
+  "") ;;
+  "detached HEAD") finish push-failed "$hash $files; not pushed (detached HEAD)" ;;
+  *) finish committed "$hash $files; not pushed ($why)" ;;
+esac
+branch=$(git symbolic-ref -q --short HEAD)
+push_head "$log"
+[ "$push_out" = pushed ] && finish committed "$hash $files; $pushed_line"
 tail -n "$DIGEST_LINES" "$log"
-if grep -q 'rejected\]' "$log"; then finish push-refused "$hash $files; origin/$branch rejected the push"; fi
-finish push-failed "$hash $files; push to origin/$branch failed"
+finish "$push_out" "$hash $files; $pushed_line"
