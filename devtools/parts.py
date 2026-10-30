@@ -13,7 +13,7 @@ This file is a versioned, loadable dependency (PLAN-services.md S0.1): the
 standard library only, no import from beside it, so a copy works alone
 (tests/test_parts.py holds that). A repo's dev.sh runs it as a script.
 
-  parts.py run <parts.json> [--resume | --only <name>...] [--jobs <n>] [--json]
+  parts.py run <parts.json> [--resume | --only <name>...] [--jobs <n>] [--json] [--record]
       Runs the parts in a pool, up to --jobs <n> at once (default: the CPU
       count; --jobs 1 runs them one at a time, in file order, as 1.3.0 did),
       starting them in file order. Two parts that share a `uses` value never
@@ -38,7 +38,11 @@ standard library only, no import from beside it, so a copy works alone
       A part that exits 3 is `unchecked` (it could not judge, e.g. a lone
       clone with no sibling repo): text `UNCHK <name>` and its last output
       line, the summary adds `; unchecked: <name> (<that line>)`; it is neither
-      a pass nor a fail, is not kept for --resume, and does not make the run red.
+      a pass nor a fail, is not kept for --resume, does not make the run red,
+      and is named in the progress file's `unchecked` list (so a reader of
+      `state: passed` can tell a run with an unchecked part from a whole pass).
+      The summary line's shape is pinned by the repos that copy this runner
+      (their own tests), so it is never reworded in passing.
       --json: stdout is one document in tools/checks/schema/check-json.schema.json,
       one check per part (a timeout `error`, exit 3 `unchecked` with `reason`
       `exit 3: <last line>`, any other non-zero exit `fail`, a skipped part `ok`
@@ -47,6 +51,15 @@ standard library only, no import from beside it, so a copy works alone
       folder (given relative to it); otherwise both are null, never a guess.
       Exit 0 iff no part run failed or errored, 1 if one did, 2 when the parts
       file or the options are refused (with --json, still one document).
+      --record (the repo's dev.sh passes it on its full check): the tree is taken
+      before the first part (`.githooks/check-pass tree`, in the git repo that
+      holds the parts file) and, after a run in which every part passed, recorded
+      for the git pre-commit (`check-pass record --from TREE`, with
+      `--resumed-from K/N` after a --resume that skipped K). Never recorded: an
+      --only run, a CHECK_PARTS run (another suite handed in), a run with a part
+      that said unchecked, a stopped run, or a tree that changed meanwhile
+      (check-pass refuses). Each is said on stderr; recording never changes the
+      exit code. No `.githooks/check-pass` in that repo: nothing to record, silently.
   parts.py validate <parts.json>   each fault on one line, exit 1; or `ok: N parts`
   parts.py files <parts.json> <name>   what that part's hash reads, one line per
       path: `content|shape|except|missing|gone <path>`
@@ -130,7 +143,7 @@ import tempfile
 import threading
 import time
 
-VERSION = "1.4.0"
+VERSION = "1.6.0"
 NAME = re.compile(r"[A-Za-z0-9._-]+\Z")
 USES = re.compile(r"(browser|serial|store:[A-Za-z0-9._/-]+)\Z")
 SERIAL = "serial"
@@ -418,7 +431,7 @@ class Progress:
                       "total": total, "label": "", "passed": 0, "failed": 0, "failed_names": [],
                       "state": "running", "last_duration_s": self.last_duration(), "resumed_from": None,
                       "passed_steps": [], "hashes": {}, "runner": VERSION, "only": None, "kept": None,
-                      "jobs": jobs, "running": [], "times": {}}
+                      "jobs": jobs, "running": [], "times": {}, "unchecked": []}
         self.write()
 
     def _running(self, name, on):
@@ -443,7 +456,7 @@ class Progress:
         else:
             s["label"] = name
         if ok is None:
-            pass
+            s.setdefault("unchecked", []).append(name)
         elif ok:
             s["passed"] += 1
             s["passed_steps"].append(name)
@@ -660,7 +673,7 @@ def refused(args, faults, as_json):
 # `usage --json` (what a consumer reads, never the help text): {flag: the
 # value it takes or None}, in usage order; the ones that repeat; the pairs
 # refused together (each shown as `[a | b]` in the usage line).
-RUN_OPTIONS = {"--resume": None, "--only": "<name>", "--jobs": "<n>", "--json": None}
+RUN_OPTIONS = {"--resume": None, "--only": "<name>", "--jobs": "<n>", "--json": None, "--record": None}
 RUN_REPEATABLE = ("--only",)
 RUN_EXCLUSIVE = (("--resume", "--only"),)
 
@@ -747,6 +760,33 @@ def part_lines(part, result, base, when):
             + [f"  {line}" for line in fails])
 
 
+def pass_recorder(base):
+    """The repo's `.githooks/check-pass` (setup's githooks component), or None: the git
+    repo that holds the parts file, never the cwd's."""
+    try:
+        p = subprocess.run(["git", "-C", base, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    cp = os.path.join(p.stdout.strip(), ".githooks", "check-pass") if p.returncode == 0 else ""
+    return cp if cp and os.access(cp, os.X_OK) else None
+
+
+def record_pass(cp, tree, resumed_from):
+    """`check-pass record --from TREE [--resumed-from K/N]`, its words on stderr."""
+    cmd = [cp, "record", "--from", tree] + (["--resumed-from", resumed_from] if resumed_from else [])
+    try:
+        p = subprocess.run(cmd, cwd=os.path.dirname(os.path.dirname(cp)), capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=120)
+        out, ok = (p.stdout + p.stderr).strip(), p.returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as e:
+        out, ok = f"check-pass record could not run: {e}", False
+    if out:
+        print(out, file=sys.stderr)
+    if not ok:
+        print("check: green, but the pass was not recorded (see above)", file=sys.stderr)
+
+
 def cmd_run(args):
     path = args[0]
     flags, only, fault, jobs = options(args[1:])
@@ -794,6 +834,27 @@ def cmd_run(args):
     def on_signal(signum, _frame):
         if not stop:
             stop.append(signum)
+
+    # --record: the tree is taken before the first part, so an edit made while the
+    # parts run is never recorded as checked (check-pass refuses a changed tree).
+    recorder = tree = None
+    if "--record" in flags:
+        if only:
+            print("check-pass: not recorded: a run with --only", file=sys.stderr)
+        elif os.environ.get("CHECK_PARTS"):
+            print("check-pass: not recorded: a CHECK_PARTS run (another suite was handed in)", file=sys.stderr)
+        else:
+            recorder = pass_recorder(base)
+            if recorder:
+                try:
+                    p = subprocess.run([recorder, "tree"], cwd=os.path.dirname(os.path.dirname(recorder)),
+                                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+                    tree = p.stdout.strip() if p.returncode == 0 else None
+                except (OSError, subprocess.TimeoutExpired):
+                    tree = None
+                if not tree:
+                    print("check-pass: not recorded: `check-pass tree` gave no tree", file=sys.stderr)
+                    recorder = None
 
     jobs = jobs or default_jobs()
     old_handlers = {s: signal.signal(s, on_signal) for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
@@ -936,6 +997,13 @@ def cmd_run(args):
         said_unchecked = "; unchecked: " + "; ".join(unchecked) if unchecked else ""
         say(time_line(wall, ran, parts_s, serial_s, jobs))
         say(summary(n, len(parts), failed) + said_unchecked + (said if not_run else ""))
+    if recorder and stopped is None and all_ok:
+        if unchecked or n != len(parts):
+            print(f"check: green, but not every part passed ({len(unchecked)} said UNCHECKED): "
+                  "the pass was not recorded", file=sys.stderr)
+        else:
+            rf = pf.state.get("resumed_from")
+            record_pass(recorder, tree, rf.split(" at ", 1)[0] if rf else None)
     if stopped is not None:
         return 128 + stopped
     return 0 if all_ok else 1
