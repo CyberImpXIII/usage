@@ -44,6 +44,12 @@
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/store-guard.sh",
             "timeout": 20,
             "statusMessage": "checking for a write to a data store"
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/prefer-recipes.sh",
+            "timeout": 20,
+            "statusMessage": "checking for a browser driven through Bash"
           }
         ]
       },
