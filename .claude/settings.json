@@ -32,6 +32,18 @@
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/primary-guard.sh",
             "timeout": 20,
             "statusMessage": "checking for a live writer of the target"
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/git-funnel.sh",
+            "timeout": 20,
+            "statusMessage": "funnelling git writes through the commit verb"
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/store-guard.sh",
+            "timeout": 20,
+            "statusMessage": "checking for a write to a data store"
           }
         ]
       },
@@ -82,6 +94,12 @@
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/primary-guard.sh",
             "timeout": 20,
             "statusMessage": "checking for a live writer of the target"
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/store-guard.sh",
+            "timeout": 20,
+            "statusMessage": "checking for a write to a data store"
           }
         ]
       }
