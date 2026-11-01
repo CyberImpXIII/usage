@@ -2,11 +2,6 @@
 
 ## Own bugs
 
-- **The tool is inert until phase 2.** Nothing is registered and no store exists.
-  Jacob's steps: `./usage registrations --export` (writes
-  `~/.claude/settings.json.proposed`, never the live file), review it, copy it
-  over `~/.claude/settings.json`, then `./usage init`. Until then `status` and
-  `gate` answer "no sample", and `gate` holds.
 - **`.githooks/` is installed but inert**: `core.hooksPath` unset, and setting
   it before `./dev.sh check` runs `.githooks/check-pass record` would make the
   pre-commit refuse every commit (setup's `githooks needs-jacob` line). The
@@ -45,20 +40,26 @@
   map inside). Nothing prunes it. Harmless at our volume; a `usage prune` is the
   fix if it ever matters.
 
-- **The store is gated in code, not yet live (V1 partial).** `usage init`
+- **The store is gated in code and live; the live guard is unproven (V1 partial).** `usage init`
   writes `<store>/cli.json` (V1, 2026-10-09). Setup installed
   `.claude/hooks/store-guard.sh` here (5954975), and the `guard` gate ran it:
   OK, 2 of 2 (Write refused with exit 2 after init, 0 before; `echo >>`
   likewise). Live, on 2026-10-09: `~/.claude/usage` does not exist (phase 2),
   and store-guard.sh is named in no settings.json (this repo's, the
   workspace's, `~/.claude`), nor installed in the workspace's `.claude/hooks/`.
-  So V1 is **partial**: it waits on Jacob's `./usage init` and the hook's
-  registration (V2, setup; settings are Jacob's).
+  On 2026-10-30 both halves are in place: `ls ~/.claude/usage` shows `cli.json`
+  (init has run), and store-guard.sh is registered in this repo's and the
+  workspace's `.claude/settings.json` (`grep -c store-guard` on each → 2 and 2)
+  and installed in both `.claude/hooks/`. Not run since: the guard against the
+  live store. Until a run shows a Write to `~/.claude/usage` refused, V1 stays
+  **partial** by its own rule.
 - **hits.tsv gained two columns (2026-10-09)**: `five_hour_resets_at`,
   `seven_day_resets_at`, for `hits --json`'s `resets_at`. An existing hits.tsv
   with the old 6-column header is now refused (HeaderMismatch, recorded in
-  failures.tsv), never appended to under the wrong header. No store exists yet
-  (phase 2), so nothing migrates; if one does, rename the old file aside. The
+  failures.tsv), never appended to under the wrong header. The live store's
+  `hits.tsv` already has the 8-column header (`head -1 ~/.claude/usage/hits.tsv`
+  → `time session agent_type five_hour_pct seven_day_pct sample_time
+  five_hour_resets_at seven_day_resets_at`), so nothing migrates. The
   export format went 1 -> 2, so an old export is refused by import/verify.
 - **Not traced**: the interpreter failing to start (`python3` missing: the .sh
   wrapper exits 0 with nothing written) and both trace places refusing
