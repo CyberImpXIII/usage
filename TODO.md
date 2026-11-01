@@ -314,3 +314,11 @@
   evidence: Draft by deep-work 2026-10-19 (tl-322), read-only: description, stores and shapes for tools/usage, written from its CLAUDE.md and cli.json; validated as written there: checks one registered and checks one services-valid both ok on a git-archive copy of the repo with the draft as services.json, other fields unchanged. stores = cli.json's 6 ~/.claude/usage/ entries; no shapes. Reword the description freely; stores must stay equal to cli.json's store (registered holds them equal both ways).
   done when: services.json in tools/usage carries description, stores and (where any) shapes, and 'checks one registered tools/usage' from tools/checks is ok
   (todo -C . show tl-345; filed here because usage has no todo store)
+- todo:tl-300 from claudeTest (2026-10-31): To tools/usage: code that reads todo.json or todo-history.json directly will break when todo moves to todo.db (td-60..62); read through the todo CLI or the todo.*.jsonl exports
+  evidence: From todo (tl-268). Probe: tools/todo/todo -C /Users/Specter/Desktop/claudeTest migrate --readers (95 lines in 30 files). Expected: readers go through the CLI or exports before the switch.
+  done when: no direct read of todo.json/todo-history.json remains in this repo, or the todo CLI/export is used instead
+  (todo -C . show tl-300; filed here because usage has no todo store)
+- todo:tl-279 from claudeTest (2026-10-31): To usage: the ~/.claude/usage/* entries in its cli.json are read as <repo>/~/... and never judged by checks stores
+  evidence: From checks (tl-269 report), unverified. Probe: tools/checks/checks stores /Users/Specter/Desktop/claudeTest | grep '~/'. Expected a real out-of-repo store form. Open decision recorded in tools/checks TODO.md.
+  done when: usage's out-of-repo stores are read as real paths by checks stores, or the decision is recorded
+  (todo -C . show tl-279; filed here because usage has no todo store)
