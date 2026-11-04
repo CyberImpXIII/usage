@@ -13,7 +13,7 @@ This file is a versioned, loadable dependency (PLAN-services.md S0.1): the
 standard library only, no import from beside it, so a copy works alone
 (tests/test_parts.py holds that). A repo's dev.sh runs it as a script.
 
-  parts.py run <parts.json> [--resume | --only <name>...] [--jobs <n>] [--json] [--record]
+  parts.py run <parts.json> [--resume | --only <name>...] [--full] [--jobs <n>] [--json] [--record]
       Runs the parts in a pool, up to --jobs <n> at once (default: the CPU
       count; --jobs 1 runs them one at a time, in file order, as 1.3.0 did),
       starting them in file order. Two parts that share a `uses` value never
@@ -49,8 +49,34 @@ standard library only, no import from beside it, so a copy works alone
       with counts.skipped 1). A failure's `file`/`line` come from a FAIL/ERROR
       line shaped `FAIL <file>:<n> ...` when <file> is a file inside the parts
       folder (given relative to it); otherwise both are null, never a guess.
+      --full (PLAN-check-progress.md §13): a part tagged `full` (a slow one)
+      runs only under --full. A run without it is the commit gate: each full
+      part is never run and never passed -- text `full  <name> (not run: <why>;
+      --full runs it)` after the parts that ran, the summary adds `; full, not
+      run: <names> (--full)`, --json gives it `unchecked` with that reason, M
+      counts only the parts this run covers, and the progress file names them
+      in `full_not_run`. --only runs exactly the parts it names, full or not,
+      so --full with --only is refused; so is a run without --full in which
+      every part is full (it would run nothing). --resume with --full resumes
+      over every part. A --full run holds the machine-wide lock
+      ($PARTS_FULL_LOCK, default ~/.claude/parts-full.lock; an flock, so a
+      holder that dies frees it): while another process holds it, the run
+      exits 3 at once, naming the holder's pid, start time and parts file, and
+      writes nothing (--json: one document, a `full-lock` check in `error`);
+      a lock left by a holder that died without releasing it (the file names a
+      pid, no one holds it) is said on stderr as stale, then taken. A lock
+      that cannot be opened also exits 3: a --full run never runs unlocked.
+      The budget (§13): every run records its wall time against BUDGET_S
+      (300 s, this file being the one record; $PARTS_BUDGET_S overrides it,
+      and the record says which) in the progress file's `budget`. A run
+      without --full or --only whose wall time is over it is reported: text
+      `budget: over: <wall>s wall, over the <b>s budget (<from>); slowest:
+      <name> <s>s, ...` (up to 3) before the `time:` line, --json the same
+      line on stderr. A finding, never a gate: the exit code is unchanged.
+      Filing it (todo detect) is the caller's, from the progress file.
       Exit 0 iff no part run failed or errored, 1 if one did, 2 when the parts
-      file or the options are refused (with --json, still one document).
+      file or the options are refused (with --json, still one document), 3
+      when --full cannot take the lock.
       --record (the repo's dev.sh passes it on its full check): the tree is taken
       before the first part (`.githooks/check-pass tree`, in the git repo that
       holds the parts file) and, after a run in which every part passed, recorded
@@ -66,12 +92,14 @@ standard library only, no import from beside it, so a copy works alone
   parts.py version                 this runner's version
   parts.py usage [--json]          this text on stdout; --json: one document,
       {runner, version, commands, run: {usage, args, options: [{flag, value,
-      repeatable}], exclusive: [[flag, flag]]}}, built from the same table as
-      run's argument check: a consumer reads this, never the text above
+      repeatable}], exclusive: [[flag, flag]]}, budget_s, full_lock}, built
+      from the same table as run's argument check: a consumer reads this,
+      never the text above (budget_s is BUDGET_S, full_lock the default lock
+      path, `~` unexpanded)
 
 THE PARTS FILE: {"parts": [part, ...], "defaults"?: {...}, "_comment"?}
   part: {"name", "run", "files", "timeout_s", "except"?, "shape"?, "role"?,
-         "always"?, "uses"?, "_comment"?}
+         "always"?, "uses"?, "full"?, "_comment"?}
   name       [A-Za-z0-9._-]+, unique
   run        a sh command, run in the parts file's folder, stdin /dev/null,
              stdout and stderr to <logs>/<name>.log
@@ -95,11 +123,14 @@ THE PARTS FILE: {"parts": [part, ...], "defaults"?: {...}, "_comment"?}
              other value is refused. A declared choice, never a fault: no
              check counts serial parts against a repo. Scheduling only, so
              not in the hash.
+  full       why this part runs only under --full (PLAN-check-progress.md §13:
+             it is too slow for the commit gate's budget), a non-empty
+             string. Which runs include it, not what it reads: not in the hash.
   `defaults` holds files, except, shape (prepended to each part's), timeout_s
   and role (fallbacks). A path named exactly in `files` counts by content,
   whatever except and shape say. Any other key is refused: a typo such as
   `timeout` is a fault, never ignored.
-  A part's hash covers its definition (all but timeout_s, role and uses), this
+  A part's hash covers its definition (all but timeout_s, role, uses and full), this
   runner's VERSION, the runtime (PARTS_RUNTIME, else this Python's version)
   and every path its files reach. It is a CLAIM: an undeclared file the part
   does read makes --resume skip it wrongly. Declare wide, or say `always`.
@@ -114,9 +145,14 @@ runner (VERSION), only and kept (the names given to --only and the passes
 kept from the last file; both null on a run without --only), jobs (the pool
 size), running (the parts running now, in file order; `label` is the part
 started or skipped last), times ({part: {start, end}}, Unix seconds, for each part that
-ran; end missing while it runs), and, once the run is over, wall_s, parts_s
-(the summed seconds of the parts that ran) and serial_s (those of `serial`
-parts): the numbers on the `time:` line.
+ran; end missing while it runs), full_run (whether --full was given),
+full_not_run (the full parts a run without --full left out; they are in no
+other field, so a later --resume has no pass of theirs to keep), and, once
+the run is over, wall_s, parts_s (the summed seconds of the parts that ran)
+and serial_s (those of `serial` parts): the numbers on the `time:` line; and
+budget: {budget_s, from, wall_s, over, why, slowest: [{name, s}]}, `over`
+true or false, or null (with `why`) where the wall time judges nothing: a
+--full or --only run, a stopped one, or a --resume under the budget.
 Rewritten whole (temp file, then rename) when the run starts, when each part
 starts and when each part ends, by the runner's main thread alone. The logs are in <progress file>.logs/ (a
 temp folder when that cannot be made; each part's line names its log). The
@@ -130,6 +166,7 @@ cannot be caught: a part runs in the runner's process group, so a kill of the
 group (what a caller's timeout does) takes the part with it.
 """
 import datetime
+import fcntl
 import fnmatch
 import hashlib
 import json
@@ -143,11 +180,18 @@ import tempfile
 import threading
 import time
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 NAME = re.compile(r"[A-Za-z0-9._-]+\Z")
 USES = re.compile(r"(browser|serial|store:[A-Za-z0-9._/-]+)\Z")
 SERIAL = "serial"
-PART_KEYS = {"name", "run", "files", "except", "shape", "timeout_s", "role", "always", "uses", "_comment"}
+PART_KEYS = {"name", "run", "files", "except", "shape", "timeout_s", "role", "always", "uses", "full", "_comment"}
+# The commit gate's wall-time budget (PLAN-check-progress.md §13), in seconds:
+# the one record of it (every repo runs a byte copy of this file; consumers read
+# it from `usage --json`). $PARTS_BUDGET_S overrides it, and the record says so.
+BUDGET_S = 300
+# The machine-wide lock any --full run holds; $PARTS_FULL_LOCK overrides it.
+FULL_LOCK = "~/.claude/parts-full.lock"
+SLOWEST = 3
 DEFAULT_KEYS = {"files", "except", "shape", "timeout_s", "role", "_comment"}
 LISTS = ("files", "except", "shape")
 FAIL_LINE = re.compile(r"^\s*(FAIL|ERROR)\b")
@@ -240,6 +284,9 @@ def check(doc, base):
         if "always" in p and not (isinstance(p["always"], str) and p["always"].strip()):
             faults.append(f"{where}: `always` must say why (a non-empty string)")
         merged["always"] = p.get("always")
+        if "full" in p and not (isinstance(p["full"], str) and p["full"].strip()):
+            faults.append(f"{where}: `full` must say why it is too slow for the commit gate (a non-empty string)")
+        merged["full"] = p.get("full")
         merged["uses"] = []
         if "uses" in p:
             uses = p["uses"]
@@ -673,19 +720,23 @@ def refused(args, faults, as_json):
 # `usage --json` (what a consumer reads, never the help text): {flag: the
 # value it takes or None}, in usage order; the ones that repeat; the pairs
 # refused together (each shown as `[a | b]` in the usage line).
-RUN_OPTIONS = {"--resume": None, "--only": "<name>", "--jobs": "<n>", "--json": None, "--record": None}
+RUN_OPTIONS = {"--resume": None, "--only": "<name>", "--full": None, "--jobs": "<n>", "--json": None, "--record": None}
 RUN_REPEATABLE = ("--only",)
-RUN_EXCLUSIVE = (("--resume", "--only"),)
+# {(flag, flag): why the two are refused together}
+RUN_EXCLUSIVE = {("--resume", "--only"): "--only runs exactly the parts it names",
+                 ("--full", "--only"): "--only runs exactly the parts it names, `full` or not"}
 
 
 def run_usage():
-    """`run <parts.json> [...]`, built from RUN_OPTIONS."""
+    """`run <parts.json> [...]`, built from RUN_OPTIONS: a flag in an exclusive
+    pair shares a `[a | b]` group with the first partner not shown yet."""
     def word(f):
         return f + (f" {RUN_OPTIONS[f]}" if RUN_OPTIONS[f] else "") + ("..." if f in RUN_REPEATABLE else "")
     groups, seen = [], set()
     for f in RUN_OPTIONS:
         if f not in seen:
             group = next((g for g in RUN_EXCLUSIVE if f in g), (f,))
+            group = [g for g in group if g == f or g not in seen]
             seen |= set(group)
             groups.append("[" + " | ".join(word(g) for g in group) + "]")
     return " ".join(["run <parts.json>"] + groups)
@@ -700,7 +751,8 @@ def usage_doc():
             "run": {"usage": "parts.py " + RUN_USAGE, "args": ["<parts.json>"],
                     "options": [{"flag": f, "value": v, "repeatable": f in RUN_REPEATABLE}
                                 for f, v in RUN_OPTIONS.items()],
-                    "exclusive": [list(g) for g in RUN_EXCLUSIVE]}}
+                    "exclusive": [list(g) for g in RUN_EXCLUSIVE]},
+            "budget_s": BUDGET_S, "full_lock": FULL_LOCK}
 
 
 def cmd_usage(args):
@@ -735,8 +787,10 @@ def options(rest):
         else:
             return flags, only, f"unknown option {a} ({RUN_USAGE})", jobs
         i += 1
-    if only and "--resume" in flags:
-        return flags, only, "--only and --resume together: --only runs exactly the parts it names", jobs
+    given = flags | ({"--only"} if only else set()) | ({"--jobs"} if jobs is not None else set())
+    for (a, b), why in RUN_EXCLUSIVE.items():
+        if a in given and b in given:
+            return flags, only, f"{b} and {a} together: {why}", jobs
     return flags, only, None, jobs
 
 
@@ -787,6 +841,137 @@ def record_pass(cp, tree, resumed_from):
         print("check: green, but the pass was not recorded (see above)", file=sys.stderr)
 
 
+# ---- the budget and the full-run lock (PLAN-check-progress.md §13) ---------
+
+def budget():
+    """(seconds, where it came from), or (None, the fault): BUDGET_S, unless
+    $PARTS_BUDGET_S says otherwise (a value that is not a number above 0 is
+    refused, never ignored)."""
+    v = os.environ.get("PARTS_BUDGET_S")
+    if v is None:
+        return BUDGET_S, "parts.py BUDGET_S"
+    try:
+        b = float(v)
+    except ValueError:
+        b = 0
+    if not b > 0 or b != b or b == float("inf"):
+        return None, f"PARTS_BUDGET_S={v!r} is not a number of seconds above 0"
+    return b, "PARTS_BUDGET_S"
+
+
+def judge_budget(seconds, source, wall, results, flags, only, skip, stopped):
+    """The progress file's `budget`: {budget_s, from, wall_s, over, why, slowest}."""
+    ran = sorted(((r[3], n) for n, r in results.items() if r is not SKIPPED), key=lambda x: (-x[0], x[1]))
+    slowest = [{"name": n, "s": round(s, 1)} for s, n in ran[:SLOWEST]]
+    over, why = wall > seconds, None
+    if "--full" in flags:
+        over, why = None, "a --full run: the budget is the commit gate's"
+    elif only:
+        over, why = None, "an --only run covers part of the suite"
+    elif not over and stopped is not None:
+        over, why = None, f"stopped by signal {stopped}"
+    elif not over and skip:
+        over, why = None, f"--resume skipped {len(skip)} part(s): under the budget proves nothing"
+    return {"budget_s": seconds, "from": source, "wall_s": round(wall, 3), "over": over, "why": why,
+            "slowest": slowest}
+
+
+def budget_line(b):
+    """The text a run over its budget says."""
+    slow = ", ".join(f"{s['name']} {s['s']:.0f}s" for s in b["slowest"]) or "no part ran"
+    return (f"budget: over: {b['wall_s']:.1f}s wall, over the {b['budget_s']:g}s budget ({b['from']}); "
+            f"slowest: {slow}; tag a slow part `full` (PLAN-check-progress.md §13)")
+
+
+class Held(Exception):
+    """The full-run lock could not be taken; the arg says why."""
+
+
+def full_lock_path():
+    return os.environ.get("PARTS_FULL_LOCK") or os.path.expanduser(FULL_LOCK)
+
+
+def _lock_holder(fd):
+    """What the lock file says of its holder: {} when empty, None when unreadable."""
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        raw = os.read(fd, 65536)
+    except OSError:
+        return None
+    if not raw.strip():
+        return {}
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _who(h):
+    if h is None:
+        return "an unknown holder (the lock file is unreadable)"
+    pid = h.get("pid")
+    return f"pid {pid if isinstance(pid, int) else 'unknown'}, started {h.get('started') or 'unknown'} ({h.get('parts') or 'parts file unknown'})"
+
+
+def take_full_lock(parts_path):
+    """(fd, stale): the machine-wide full-run lock, an flock (freed by the
+    kernel when its holder dies), the file naming its holder. stale: what a
+    holder that ended without releasing it left in the file, said by the
+    caller, or None. Raises Held when another process holds it or the file
+    cannot be opened: a --full run never runs unlocked."""
+    path = full_lock_path()
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as e:
+        raise Held(f"cannot open the full-run lock {path}: {e.strerror}; a --full run never runs unlocked")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        h = _lock_holder(fd)
+        os.close(fd)
+        dead = h and isinstance(h.get("pid"), int) and not alive(h["pid"])
+        raise Held(f"a full run holds the lock {path}: {_who(h)}"
+                   + ("; that pid is not running, yet the lock is held (a process it left?)" if dead else "")
+                   + "; one full run at a time on this machine")
+    h = _lock_holder(fd)
+    stale = None
+    if h != {}:
+        pid = h.get("pid") if h else None
+        stale = (f"full-run lock: stale: {_who(h)} "
+                 + ("is not running" if not (isinstance(pid, int) and alive(pid)) else "no longer holds it")
+                 + f" and never released {path}; taken")
+    me = json.dumps({"pid": os.getpid(), "started": now(), "parts": os.path.abspath(parts_path)})
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, me.encode())
+    except OSError as e:
+        os.close(fd)
+        raise Held(f"cannot write the full-run lock {path}: {e.strerror}; a --full run never runs unlocked")
+    return fd, stale
+
+
+def release_full_lock(fd):
+    """Empty the file (a released lock names no one), then unlock."""
+    try:
+        os.ftruncate(fd, 0)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def held(why, as_json):
+    """Exit 3: the lock is held (or cannot be taken); nothing ran, nothing written."""
+    if as_json:
+        print(json.dumps({"ok": False, "checks": [entry("full-lock", "error", "tests", [f"not run: {why}"])]}))
+    else:
+        print(f"parts: not run: {why}", file=sys.stderr)
+    return EXIT_UNCHECKED
+
+
 def cmd_run(args):
     path = args[0]
     flags, only, fault, jobs = options(args[1:])
@@ -800,11 +985,37 @@ def cmd_run(args):
     unknown = [n for n in only if n not in {p["name"] for p in parts}]
     if unknown:
         return refused(args, [f"--only {n}: no part of that name in {path}" for n in unknown], as_json)
+    full_out = [] if only or "--full" in flags else [p for p in parts if p["full"]]
+    if full_out and len(full_out) == len(parts):
+        return refused(args, ["every part is `full`: a run without --full would run none (--full runs them)"],
+                       as_json)
+    seconds, source = budget()
+    if seconds is None:
+        return refused(args, [source], as_json)
+    lock = None
+    if "--full" in flags:
+        try:
+            lock, stale = take_full_lock(path)
+        except Held as e:
+            return held(e.args[0], as_json)
+        if stale:
+            print(stale, file=sys.stderr)
+    try:
+        return run_suite(path, base, parts, flags, only, jobs, as_json, full_out, (seconds, source))
+    finally:
+        if lock is not None:
+            release_full_lock(lock)
+
+
+def run_suite(path, base, parts, flags, only, jobs, as_json, full_out, budget_of):
+    """The run itself, once the options, the parts file and (for --full) the lock are settled."""
     pf = progress(base, path)
     say = (lambda *_: None) if as_json else (lambda line: print(line, flush=True))
 
     hashes = {p["name"]: part_hash(base, p, pf.ignored) for p in parts}
     every, skip, when, kept = parts, set(), None, []
+    if full_out:
+        parts = [p for p in every if not p["full"]]
     if only:
         parts = [p for p in every if p["name"] in only]
         old, why, when = pf.old(os.getpid())
@@ -859,6 +1070,7 @@ def cmd_run(args):
     jobs = jobs or default_jobs()
     old_handlers = {s: signal.signal(s, on_signal) for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
     pf.start(len(parts), jobs, [p["name"] for p in parts])
+    pf.state.update(full_run="--full" in flags, full_not_run=[p["name"] for p in full_out])
     if skip:
         pf.state["resumed_from"] = f"{len(skip)}/{len(parts)} at {when}"
     if only:
@@ -983,20 +1195,29 @@ def cmd_run(args):
             failed.append(f"{name} ({fails[0]})" if fails[0].startswith(why) else f"{name} ({why}: {fails[0]})")
     wall = time.monotonic() - wall0
     pf.state.update(wall_s=round(wall, 3), parts_s=round(parts_s, 3), serial_s=round(serial_s, 3))
+    pf.state["budget"] = bud = judge_budget(*budget_of, wall, results, flags, only, skip, stopped)
     all_ok = n + len(unchecked) == len(parts)        # a part that said unchecked is neither a pass nor a fail
     pf.end("passed" if all_ok else "failed")
-    if only:
+    if only or full_out:
         result = {c["name"]: c for c in checks}
-        checks = [result.get(p["name"]) or entry(p["name"], "unchecked", p["role"],
-                                                 reason="not run: --only named other parts") for p in every]
+        checks = [result.get(p["name"]) or entry(p["name"], "unchecked", p["role"], reason=(
+            "not run: --only named other parts" if only
+            else f"not run: a `full` part ({p['full']}); --full runs it")) for p in every]
+    not_run = sum(c["status"] == "unchecked" for c in checks) - len(unchecked) - len(full_out)
     if as_json:
         print(json.dumps({"ok": all_ok, "checks": checks}))
+        if bud["over"]:
+            print(budget_line(bud), file=sys.stderr)
     else:
-        not_run = sum(c["status"] == "unchecked" for c in checks) - len(unchecked)
         said = "; not run: " + (f"{not_run} (--only)" if only and not stopped else str(not_run))
         said_unchecked = "; unchecked: " + "; ".join(unchecked) if unchecked else ""
+        said_full = f"; full, not run: {shorten([p['name'] for p in full_out])} (--full)" if full_out else ""
+        for p in full_out:
+            say(f"full  {p['name']} (not run: {p['full']}; --full runs it)")
+        if bud["over"]:
+            say(budget_line(bud))
         say(time_line(wall, ran, parts_s, serial_s, jobs))
-        say(summary(n, len(parts), failed) + said_unchecked + (said if not_run else ""))
+        say(summary(n, len(parts), failed) + said_unchecked + (said if not_run else "") + said_full)
     if recorder and stopped is None and all_ok:
         if unchecked or n != len(parts):
             print(f"check: green, but not every part passed ({len(unchecked)} said UNCHECKED): "
@@ -1036,6 +1257,8 @@ def cmd_files(args):
         print(f"{kind} {path}")
     if part["always"]:
         print(f"always: {part['always']}")
+    if part["full"]:
+        print(f"full: {part['full']}")
     return 0
 
 
